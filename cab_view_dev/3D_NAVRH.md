@@ -1,11 +1,49 @@
 # Jednoduchý 3D pohled z kabiny – návrh (etapa 2)
 
-Tohle je návrh k připomínkám, ne hotový kód. Obrázky jsou vyrenderované prototypem
-`3d_mockup/mockup.py`, který kreslí **stejným způsobem, jaký by použila hra** (plné mnohoúhelníky
-po dlaždicích od nejvzdálenější k nejbližší, barvy jen z 256barevné palety OpenTTD). Takže obrázky
-nejsou malba „jak by to mohlo být“, ale zhruba to, co hra opravdu dokáže nakreslit.
+Tohle je návrh k připomínkám, ne hotový kód. Obrázky jsou vyrenderované prototypy v `3d_mockup/`,
+které kreslí **stejným způsobem, jaký by použila hra** (po dlaždicích od nejvzdálenější k nejbližší,
+barvy jen z 256barevné palety OpenTTD). Nejsou to tedy malby „jak by to mohlo být“, ale zhruba to,
+co hra opravdu dokáže nakreslit.
 
-## Jak to bude vypadat
+Jsou dvě varianty vzhledu. Václav u první (plné barvy, kvádry) řekl, že funkčně je dobrá, ale chybí jí
+kouzlo TTD. Proto vznikla **varianta B s grafikou ze hry**, kterou teď doporučuji.
+
+## Varianta B – grafika ze hry (doporučená)
+
+![Varianta B](3d_mockup/ttd_kabina.png)
+
+- **Zem** každé dlaždice je její vlastní sprite ze hry (tráva, štěrk s kolejí, silnice, pole, voda,
+  zahrádka u domu). Kosočtverec z izometrického pohledu se „rozbalí“ zpátky na čtverec dlaždice
+  a nakreslí v perspektivě. Na svazích se jen ztmaví podle sklonu.
+- **Kolejnice a pražce** se kreslí navíc přes štěrk jako ostré čáry, aby byly zblízka čisté
+  a v obloucích 45° měly malý poloměr (štěrk zůstává lomený přesně jako ve hře).
+- **Domy, stromy, nádražní budovy a návěstidla** jsou jejich izometrické sprity postavené na dlaždici
+  jako kulisy z kartonu a zmenšené podle vzdálenosti. Je to nepřesné (díváme se na ně „shora“
+  i zepředu zároveň), ale přesně to dělá to kouzlo – vypadá to jako svět TTD, ne jako jiná hra.
+- **Vlaky** mají ve hře 8 spritů podle směru. Vybere se ten, který odpovídá úhlu, pod kterým vlak
+  vidíme (jako postavy ve starých 3D hrách). Na obrázku přijíždí vlak po vedlejší koleji.
+- **Celé se to kreslí ve velikosti rozhraní 1×** a pak zvětší bez vyhlazování, takže má i na Retině
+  ty typické velké pixely jako zbytek hry.
+- Opar v dálce a obloha jako ve variantě A, přechody na obloze jsou dithrované šachovnicí (jako
+  `FILLRECT_CHECKER`), aby nebyly vidět ostré pruhy.
+
+### Jak to udělat v kódu (navíc oproti variantě A)
+
+- Hra má sprity v paměti už zakódované pro aktuální blitter, takže z nich nejde přímo číst pixely.
+  Potřebné sprity si 3D pohled jednou načte znovu v 8bit podobě přes `SpriteLoaderGrf` (stejně jako hra
+  při načítání). Díky tomu se použije i grafika z NewGRF, kterou má hráč nainstalovanou.
+- Kreslí se do vlastního 8bit bufferu (index palety na pixel) ve velikosti 1× a ten se pak přenese
+  na obrazovku zvětšený podle velikosti rozhraní přes `Blitter::SetPixel` / `Blitter::DrawRect`
+  (běhy stejné barvy). Funguje to s 8bpp i 32bpp blitterem i s OpenGL ovladačem.
+- Zem: pro každou dlaždici dva trojúhelníky s texturou (perspektivně správné mapování),
+  ~200 000 pixelů na snímek při okně 640×310 v 1×. To je pro dnešní procesor málo, ale změřím to
+  v kroku 3 na Linuxu a na Macu.
+- Rizika: zakódování spritů (načítání mimo sprite cache) je zásah do vnitřností hry; když by to
+  nešlo čistě, náhradní řešení je vzít jen průměrnou barvu spritu (pak je to zhruba varianta A
+  se sprity pro domy a stromy).
+
+## Varianta A – plné barvy (první návrh)
+
 
 Okno Kabina zůstane stejné (palubní deska, tlačítka). V liště tlačítek přibude přepínač **3D**:
 vypnutý = dnešní pohled shora, zapnutý = pohled strojvedoucího dopředu po trati.
@@ -40,7 +78,7 @@ takže na Retině je ostrý, ne rozmazaný.
 
 Průmysl a objekty (vysílače, majáky…) budou v kroku 4 také kvádry s barvou podle typu.
 
-## Jak to bude fungovat v kódu
+## Jak to bude fungovat v kódu (obě varianty)
 
 - **Kamera** sedí na čele vlaku (`x_pos`, `y_pos`, `z_pos` prvního vozidla) ve výšce střechy (8 jednotek),
   dívá se ve směru jízdy, 6° dolů, zorný úhel 64°. Směr kamery se plynule dotáčí stejně jako dnešní
@@ -81,16 +119,18 @@ mosty a tunely; doladit plynulost na Retině.
 
 ## Otázky k rozhodnutí
 
-1. **Výška pohledu**: navrhuji střechu vlaku (jako na obrázku). Nižší (oči strojvedoucího) je realističtější,
+1. **Vzhled**: varianta B s grafikou ze hry (doporučuji), nebo A s plnými barvami.
+2. **Výška pohledu**: navrhuji střechu vlaku (jako na obrázcích). Nižší (oči strojvedoucího) je realističtější,
    ale vidí se mnohem méně z trati před vlakem.
-2. **Obloha v pruzích** (jako na obrázku, pasuje k retro paletě), nebo jedna barva.
-3. **Kde přepínač**: tlačítko „3D“ vedle „Výhled vpřed“ (jako na obrázku).
+3. **Kde přepínač**: tlačítko „3D“ vedle „Výhled vpřed“ (jako na obrázcích).
 
 ## Prototyp
 
 ```
 python3 cab_view_dev/3d_mockup/mockup.py src/table/palettes.h <snímek okna Kabina ve 2×> <výstupní složka>
+python3 cab_view_dev/3d_mockup/mockup_ttd.py <zdroják OpenGFX> <snímek okna Kabina ve 2×> <výstupní složka>
 ```
 
-Potřebuje Python 3 s `numpy` a `Pillow`. Svět je smyšlený (dvoukolejka s obloukem, městečko,
+Potřebuje Python 3 s `numpy` a `Pillow`. Varianta B čte grafiku přímo ze zdrojáků OpenGFX
+(`git clone https://github.com/OpenTTD/OpenGFX`, tag 8.0; `ogfx.py` umí číst jejich `.pnml` a `.png`). Svět je smyšlený (dvoukolejka s obloukem, městečko,
 nádraží, kopce), z mapy hry se nic nečte.
