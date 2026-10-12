@@ -1250,6 +1250,17 @@ static void GfxMainBlitter(const Sprite *sprite, int x, int y, BlitterMode mode,
 }
 
 /**
+ * Draw a sprite that was encoded by the current blitter outside of the sprite cache, unscaled.
+ * @param sprite The encoded sprite, see Blitter::Encode with SpriteType::Font.
+ * @param x Left position in the current drawing area.
+ * @param y Top position in the current drawing area.
+ */
+void GfxBlitEncodedSprite(const Sprite *sprite, int x, int y)
+{
+	GfxMainBlitter(sprite, x, y, BlitterMode::Normal);
+}
+
+/**
  * Initialize _stringwidth_table cache for the specified font sizes.
  * @param fontsizes Font sizes to initialise.
  */

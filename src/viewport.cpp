@@ -1320,6 +1320,72 @@ static void ViewportAddLandscape()
 }
 
 /**
+ * Collect the ground sprites of a tile, as the viewport would draw them.
+ * The tile's draw procedure runs like for a viewport without any clipping and without the
+ * transparency and invisibility settings of the player; sprites drawn on foundations are
+ * included, while foundations, buildings and other sortable sprites are not.
+ * @param tile The tile.
+ * @param[out] sprites The ground sprites in drawing order, with their position in virtual viewport coordinates.
+ * @param[out] boxes If not nullptr, also the opaque sortable sprites other than foundations and catenary, with their bounding boxes.
+ */
+void CollectTileGroundSprites(TileIndex tile, std::vector<GroundSpriteToDraw> &sprites, std::vector<BoxSpriteToDraw> *boxes)
+{
+	assert(_vd.tile_sprites_to_draw.empty() && _vd.parent_sprites_to_draw.empty() && _vd.child_screen_sprites_to_draw.empty());
+
+	/* Unclipped "viewport" at the closest zoom, so all details are drawn. */
+	_vd.dpi = {};
+	_vd.dpi.zoom = ZoomLevel::Min;
+	_vd.dpi.left = -(1 << 28);
+	_vd.dpi.top = -(1 << 28);
+	_vd.dpi.width = 1 << 29;
+	_vd.dpi.height = 1 << 29;
+	AutoRestoreBackup dpi_backup(_cur_dpi, &_vd.dpi);
+	AutoRestoreBackup ti_backup(_cur_ti, _cur_ti);
+	/* Only the catenary counts as transparent, so its thin wires and pylons are not taken for boxes. */
+	AutoRestoreBackup transparency_backup(_transparency_opt, static_cast<TransparencyOptionBits>(1U << TO_CATENARY));
+	AutoRestoreBackup invisibility_backup(_invisibility_opt, TransparencyOptionBits{});
+
+	_vd.combine_sprites = SPRITE_COMBINE_NONE;
+	_vd.last_child = LAST_CHILD_NONE;
+	_vd.foundation_part = FOUNDATION_PART_NONE;
+	_vd.foundation[0] = -1;
+	_vd.foundation[1] = -1;
+	_vd.last_foundation_child[0] = LAST_CHILD_NONE;
+	_vd.last_foundation_child[1] = LAST_CHILD_NONE;
+
+	_cur_ti.tile = tile;
+	_cur_ti.x = TileX(tile) * TILE_SIZE;
+	_cur_ti.y = TileY(tile) * TILE_SIZE;
+	std::tie(_cur_ti.tileh, _cur_ti.z) = GetTilePixelSlope(tile);
+	_tile_type_procs[GetTileType(tile)]->draw_tile_proc(&_cur_ti);
+
+	for (const TileSpriteToDraw &ts : _vd.tile_sprites_to_draw) {
+		sprites.push_back({ts.image, ts.pal, ts.x, ts.y});
+	}
+	for (int part = FOUNDATION_PART_NORMAL; part < FOUNDATION_PART_END; part++) {
+		if (_vd.foundation[part] == -1) continue;
+		const ParentSpriteToDraw &ps = _vd.parent_sprites_to_draw[_vd.foundation[part]];
+		for (int child = ps.first_child; child >= 0; child = _vd.child_screen_sprites_to_draw[child].next) {
+			const ChildScreenSpriteToDraw &cs = _vd.child_screen_sprites_to_draw[child];
+			sprites.push_back({cs.image, cs.pal, (cs.relative ? ps.left : ps.x) + cs.x, (cs.relative ? ps.top : ps.y) + cs.y});
+		}
+	}
+	if (boxes != nullptr) {
+		for (int i = 0; i < static_cast<int>(_vd.parent_sprites_to_draw.size()); i++) {
+			if (i == _vd.foundation[FOUNDATION_PART_NORMAL] || i == _vd.foundation[FOUNDATION_PART_HALFTILE]) continue;
+			const ParentSpriteToDraw &ps = _vd.parent_sprites_to_draw[i];
+			if (ps.image == SPR_EMPTY_BOUNDING_BOX || ps.sub != nullptr || HasBit(ps.image, PALETTE_MODIFIER_TRANSPARENT)) continue;
+			boxes->push_back({ps.image, ps.pal, ps.x, ps.y, ps.xmin, ps.ymin, ps.zmin, ps.xmax, ps.ymax, ps.zmax});
+		}
+	}
+
+	_vd.string_sprites_to_draw.clear();
+	_vd.tile_sprites_to_draw.clear();
+	_vd.parent_sprites_to_draw.clear();
+	_vd.child_screen_sprites_to_draw.clear();
+}
+
+/**
  * Add a string to draw in the current viewport.
  * @param dpi current viewport area
  * @param sign sign position and dimension

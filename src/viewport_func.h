@@ -71,6 +71,30 @@ void SetTileSelectBigSize(int ox, int oy, int sx, int sy);
 
 void ViewportDoDraw(const Viewport &vp, int left, int top, int right, int bottom);
 
+/** A ground sprite of a tile, see CollectTileGroundSprites. */
+struct GroundSpriteToDraw {
+	SpriteID image; ///< The sprite.
+	PaletteID pal; ///< Its palette.
+	int32_t x; ///< Screen X coordinate (virtual viewport coordinates) where it would be drawn.
+	int32_t y; ///< Screen Y coordinate (virtual viewport coordinates) where it would be drawn.
+};
+
+/** A sprite of a tile that stands in a bounding box, like a building, see CollectTileGroundSprites. */
+struct BoxSpriteToDraw {
+	SpriteID image; ///< The sprite.
+	PaletteID pal; ///< Its palette.
+	int32_t x; ///< Screen X coordinate (virtual viewport coordinates) where it would be drawn.
+	int32_t y; ///< Screen Y coordinate (virtual viewport coordinates) where it would be drawn.
+	int32_t xmin; ///< Minimal world X coordinate of the bounding box.
+	int32_t ymin; ///< Minimal world Y coordinate of the bounding box.
+	int32_t zmin; ///< Minimal world Z coordinate of the bounding box.
+	int32_t xmax; ///< Maximal world X coordinate of the bounding box, inclusive.
+	int32_t ymax; ///< Maximal world Y coordinate of the bounding box, inclusive.
+	int32_t zmax; ///< Maximal world Z coordinate of the bounding box, inclusive.
+};
+
+void CollectTileGroundSprites(TileIndex tile, std::vector<GroundSpriteToDraw> &sprites, std::vector<BoxSpriteToDraw> *boxes = nullptr);
+
 bool ScrollWindowToTile(TileIndex tile, Window *w, bool instant = false);
 bool ScrollWindowTo(int x, int y, int z, Window *w, bool instant = false);
 

@@ -132,6 +132,8 @@ Průmysl a objekty (vysílače, majáky…) budou v kroku 4 také kvádry s barv
 
 **Krok 3 – první verze**: přepínač 2D/3D v okně Kabina, kamera, terén s výškami, voda, koleje
 (rovné, oblouky, výhybky), opar a obloha. Jen vlaky. Test na Linuxu (1× a 2×), pak Václav na Macu.
+*Hotovo na Linuxu.* Oproti popisu výše se nekreslí malířovým algoritmem plnými barvami, ale vlastním
+rasterizérem se z-bufferem a texturami ze spritů hry (varianta C), ve více vláknech. Podrobnosti v `README.md`.
 
 **Krok 4 – doplnit svět**: silnice, domy, nádraží, návěstidla se stavem, stromy, ostatní vozidla, průmysl,
 mosty a tunely; doladit plynulost na Retině.

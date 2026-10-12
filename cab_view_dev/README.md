@@ -32,12 +32,67 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - **macOS arm64** (Release i Debug) se v GitHub CI sestaví a projde testy. Windows CI padalo na staré verzi
   knihovny breakpad z vcpkg; baseline vcpkg je převzatá z upstreamu (commit 935674800).
 
+### 3D pohled – krok 3
+
+- Tlačítko **3D** vedle „Výhled vpřed“ přepíná u vlaků mezi mapou a 3D pohledem (platí pro všechna okna Kabina,
+  stejně jako „Výhled vpřed“). U ostatních vozidel je zašedlé. Ve 3D jsou zašedlé zoom a „Výhled vpřed“.
+- `src/cab_view_3d.cpp` – vlastní softwarový renderer, žádné OpenGL: trojúhelníky s perspektivně správnými
+  texturami a z-bufferem, vyplňování po řádcích ve více vláknech (prokládané pruhy po 4 řádcích). Hotový obraz
+  se zapíše přímo do obrazovky (32bpp blittery), u 8bpp přes sprite (`GfxBlitEncodedSprite` v `gfx.cpp`).
+- **Terén**: výšky a svahy dlaždic, boky základů, voda. Textura země každé dlaždice je složená ze **spritů hry**
+  (tráva, pole, štěrk pod kolejí, silnice, voda…) – sbírá je `CollectTileGroundSprites` ve `viewport.cpp`, který
+  spustí kreslicí funkci dlaždice „naprázdno“. Sprity se berou v plném rozlišení a vzorkují hladce (bilineárně,
+  4 úrovně mipmap), takže na Retině nejsou vidět kostičky. Stejně vypadající dlaždice sdílí jednu texturu.
+- Zem pod domy, průmyslem a objekty má ve hře černé místo pro budovu – to se doplní z okolní země, dokud
+  v kroku 4 nepřibudou 3D budovy.
+- **Koleje**: pražce do 10 dlaždic a kolejnice do 24 dlaždic jako skutečná geometrie (zblízka ostré), dál už jen
+  štěrk v textuře; vzdálené kolejnice postupně splývají se štěrkem, aby netvořily ostré čáry přes celý obraz.
+  Rovné, oblouky, výhybky, koleje ve stanici a na přejezdu.
+- Zem rovné koleje (osa X nebo Y) se vyhladí podél koleje (o 2 jednotky, `SmoothAlong`): v izometrických spritech
+  jsou okraje štěrku schody z pixelů (2:1), které by ve 3D tvořily zuby ±0,25 jednotky do stran, a při jízdě se
+  okraje kolejového lože třásly ze strany na stranu (na Macu ve zvětšeném okně, ~4–6 px za snímek v okně 1268 px).
+- **Nádraží** (doplněno po zkoušce na Macu, kde ve stanici chyběla nástupiště): nástupiště, budovy a střechy
+  železničních stanic jsou kvádry, podle kterých je hra řadí v mapě (`CollectTileGroundSprites` je teď vrací
+  s jejich sprity), a na stěny kvádru se promítne sprite tak, jak ho kreslí mapa. Stěny, které izometrický pohled
+  neukazuje, dostanou obrázek protější stěny; kde je sprite průhledný, je průhledný i kvádr (sloupy, okraje).
+  Trolejové vedení se vynechává (zatím jen tenké čáry). Funguje i pro stanice z NewGRF. Budova nádraží je zatím
+  jen kvádr se střechou namalovanou na stěnách – skutečné tvary budov jsou úkol kroku 4.
+- Opar od 14 dlaždic, dohled 56 dlaždic, obloha s přechodem do oparu.
+- **Kamera** na čele vlaku ve výšce střechy (8 jednotek), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
+  (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu a v tunelu je obraz černý.
+- **Plynulost**: vlak se ve hře posouvá po celých krocích (1/16 dlaždice), v 90 km/h jen asi každý třetí herní
+  tik, a herní tiky (27 ms) přicházejí jinak než snímky obrazovky, často pozdě nebo po dvou (když kreslení
+  trvá dlouho). Kamera proto bere i rozjetý krok (`progress`), pamatuje si posledních 8 tiků a obraz ukazuje
+  okamžik asi 1,5 tiku pozadu. Ten běží podle hodin a podle tiků se mění jen jeho rychlost (nejvýš o 10 %),
+  takže se pohyb netřese (dřív se okamžik dorovnával skokem k tikům a blízké pražce se chvěly).
+  Výška se na svazích vyhlazuje podle ujeté dráhy (ve hře stoupá po skocích).
+- Překresluje se při pohybu kamery na každý snímek obrazovky (60×), když obrázek zabere nejvýš 65 % času mezi
+  snímky. Jinak se obrázek zmenší (až na 50 % v každém směru) a na obrazovku se hladce zvětší; když nestačí ani
+  to, kreslí se na každý druhý (třetí…) snímek, rovnoměrně. Pomalejší kreslení každý druhý snímek na Macu
+  cukalo. Když vlak stojí, překresluje se jednou za sekundu.
+- Při 3D pohledu okno Kabina nemá viewport mapy (zruší se a při návratu na mapu se vytvoří znovu se stejným
+  přiblížením). Skrytý viewport za 3D pohledem dál sledoval vlak, a když se viewport posune, hra posune i jeho
+  pixely na obrazovce: hotový 3D obrázek se tak na 2 z 5 snímků ukázal posunutý o 8–12 px šikmo (2:1), což byl
+  hlavní zdroj třesení „ze strany na stranu“ na Macu. Interní snímky rendereru to neukázaly; našel to až záznam
+  obrazovky (na Linuxu `ffmpeg -f x11grab`, posun vzdálené části obrazu mezi snímky).
+- **Měření**: hru spustit s `-d misc=3`, do logu se pak u každého snímku píše čas přípravy, vyplnění a výstupu
+  a změny tempa a velikosti obrázku; s `-d misc=4` i čas a poloha kamery každého snímku (na kontrolu plynulosti).
+  Linux VM se 4 jádry, okno 1268×620 px (rozhraní 2×): příprava ~3 ms, vyplnění ~12–15 ms, výstup ~2 ms, tedy
+  30 snímků/s; v menším okně 60 snímků/s s obrázkem na 60 %. MacBook Air (Retina), výchozí velikost okna:
+  ~7 ms na obrázek (okno „Počet snímků za sekundu“, řádek „Vykreslování grafiky“), tedy 60 snímků/s.
+- Zatím chybí (krok 4): budovy, návěstidla, trolejové vedení, stromy, vozidla, mosty a portály tunelů (vlak zatím vjede
+  „do kopce“), silnice jen jako textura země. Pravoúhlé zatáčky jsou ve hře velmi ostré, takže v nich kolej na
+  okamžik zmizí ze záběru; svahy jsou strmé (50 %) stejně jako ve hře.
+
 ## Další kroky
 
-1. Vyzkoušet u sebe na MacBooku (Retina, rozhraní 2×).
-2. Případně: výhled podél silnice i pro silniční vozidla (`CFollowTrackRoad`), další údaje na palubní desce
+1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
+   `openttd-cab-view-macos-arm64`, stáhnout ze stránky běhu na GitHubu, rozbalit, spustit). Na MacBooku Air
+   3D pohled běží v plném rozlišení Retiny.
+2. Krok 4: doplnit 3D svět – budovy, návěstidla, stromy, ostatní vozidla, mosty a portály tunelů; doladit
+   plynulost na Retině.
+3. Případně: výhled podél silnice i pro silniční vozidla (`CFollowTrackRoad`), další údaje na palubní desce
    (návěst, sklon), klávesová zkratka pro otevření kabiny.
-3. Etapa 2: jednoduchý 3D pohled.
 
 ## Testovací prostředí (cloud, Ubuntu 24.04)
 
@@ -64,6 +119,8 @@ Síť je omezená: apt (archive.ubuntu.com), PyPI i cdn.openttd.org jsou blokova
 - Okno Kabina u vozidla AI: v nástrojové liště „Vlaky“ (nebo silniční vozidla, lodě, letadla) → v rozbalovací nabídce
   druhá společnost („Cab Test Rail“) → klik na vozidlo v seznamu → tlačítko s lokomotivou v okně vozidla. (Klik přímo na vlak v mapě v Xvfb nefungoval.)
 - `test.cfg` nastavuje `language` v `[misc]`; velikost rozhraní se mění tamtéž (`gui_scale = 100` / `200`).
+  Pro kopcovitou mapu (3D) stačí v `test.cfg` změnit `terrain_type = 3` (a třeba `generation_seed`).
+  AI staví trať jinde při každém spuštění.
   Pozor: `kill` hru neukončí, je potřeba `pkill -9 openttd`, jinak běží dvě hry přes sebe.
-- Ovládání: `python3 x.py click X Y`, `key F1`, `wheel X Y N`…; snímek obrazovky `import -display :99 -window root shot.png`
+- Ovládání: `python3 x.py click X Y`, `drag X1 Y1 X2 Y2`, `key F1`, `wheel X Y N`…; snímek obrazovky `import -display :99 -window root shot.png`
   nebo v konzoli hry příkaz `screenshot`. Konzole: `scrollto <tile>`, `pause`.
