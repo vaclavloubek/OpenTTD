@@ -2855,7 +2855,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_vehicle_view_widgets
 			EndContainer(),
 			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VV_SHOW_ORDERS), SetMinimalSize(18, 18), SetSpriteTip(SPR_SHOW_ORDERS),
 			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VV_SHOW_DETAILS), SetMinimalSize(18, 18), SetSpriteTip(SPR_SHOW_VEHICLE_DETAILS),
-			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VV_CAB_VIEW), SetMinimalSize(18, 18), SetSpriteTip(SPR_CENTRE_VIEW_VEHICLE, STR_VEHICLE_VIEW_CAB_VIEW_TOOLTIP),
+			NWidget(WWT_PUSHBTN, COLOUR_GREY, WID_VV_CAB_VIEW), SetMinimalSize(18, 18), SetToolTip(STR_VEHICLE_VIEW_CAB_VIEW_TOOLTIP),
 			NWidget(WWT_PANEL, COLOUR_GREY), SetMinimalSize(18, 0), SetResize(0, 1), EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -3202,6 +3202,10 @@ public:
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
 	{
+		if (widget == WID_VV_CAB_VIEW) {
+			DrawCabViewIcon(r.Shrink(WidgetDimensions::scaled.imgbtn));
+			return;
+		}
 		if (widget != WID_VV_START_STOP) return;
 
 		/* Draw the flag plus orders. */

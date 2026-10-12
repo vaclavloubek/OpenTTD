@@ -14,6 +14,9 @@
 #include "vehicle_base.h"
 #include "vehicle_gui.h"
 #include "train.h"
+#include "landscape.h"
+#include "pbs.h"
+#include "pathfinder/follow_track.hpp"
 #include "company_func.h"
 #include "strings_func.h"
 #include "zoom_func.h"
@@ -39,8 +42,24 @@ static constexpr float CAB_VIEW_EASE_MS = 650.0f;
 static constexpr float CAB_VIEW_REACH_MIN = 0.30f;
 /** Look-ahead at full speed, as fraction of half the viewport size. */
 static constexpr float CAB_VIEW_REACH_MAX = 0.60f;
+/** How many tiles ahead along the track the camera looks at most. */
+static constexpr int CAB_VIEW_MAX_TRACK_TILES = 48;
 /** How often (in milliseconds) the dashboard is refreshed. */
 static constexpr uint CAB_VIEW_DASHBOARD_REFRESH_MS = 100;
+/** Minimal height of the speedometer dial, in unscaled GUI pixels. */
+static constexpr int CAB_VIEW_DIAL_HEIGHT = 52;
+/** Angle (in degrees, counter-clockwise from the right) of the speedometer dial at standstill. */
+static constexpr float CAB_VIEW_DIAL_START = 225.0f;
+/** Angle (in degrees) the speedometer needle sweeps from standstill to the maximum speed. */
+static constexpr float CAB_VIEW_DIAL_SWEEP = 270.0f;
+/** Number of ticks on the speedometer dial. */
+static constexpr int CAB_VIEW_DIAL_TICKS = 10;
+/** Position of the maximum speed of the vehicle on the speedometer dial; beyond it is the red zone. */
+static constexpr float CAB_VIEW_DIAL_MAX_SPEED = 0.85f;
+/** Background of the dashboard. */
+static constexpr PixelColour CAB_VIEW_DASHBOARD_COLOUR = GREY_SCALE(1);
+/** Face of the speedometer dial. */
+static constexpr PixelColour CAB_VIEW_DIAL_COLOUR = GREY_SCALE(4);
 
 static constexpr std::initializer_list<NWidgetPart> _nested_cab_view_widgets = {
 	NWidget(NWID_HORIZONTAL),
@@ -71,6 +90,63 @@ private:
 	float offset_x = 0; ///< Current look-ahead offset in virtual viewport coordinates.
 	float offset_y = 0; ///< Current look-ahead offset in virtual viewport coordinates.
 	uint dashboard_timer = 0; ///< Milliseconds since the dashboard was last redrawn.
+	int speed_width = 0; ///< Width of the speed part of the dashboard, dial included.
+	int load_width = 0; ///< Width of the load part of the dashboard.
+
+	/**
+	 * Find the point ahead along the track of a train where the camera should look.
+	 * Walks the track from the front of the train until it leaves the ellipse with the
+	 * given half axes around the train, so in curves the camera looks around the corner.
+	 * At junctions it follows the reserved path, if there is one, and otherwise stops.
+	 * @param t The train.
+	 * @param ax Horizontal half axis of the ellipse, in virtual viewport coordinates.
+	 * @param ay Vertical half axis of the ellipse, in virtual viewport coordinates.
+	 * @return Offset from the train in virtual viewport coordinates, or std::nullopt when the track cannot be followed.
+	 */
+	static std::optional<Point> GetTrackLookAheadTarget(const Train *t, float ax, float ay)
+	{
+		/* In depots, tunnels and on bridges, fall back to the direction of travel. */
+		if (t->track == TRACK_BIT_DEPOT || t->track == TRACK_BIT_WORMHOLE) return std::nullopt;
+		Trackdir td = t->GetVehicleTrackdir();
+		if (td == INVALID_TRACKDIR) return std::nullopt;
+
+		Point base = RemapCoords(t->x_pos, t->y_pos, t->z_pos);
+		Point last = {0, 0};
+		TileIndex tile = t->tile;
+		CFollowTrackRail ft(t);
+
+		for (int i = 0; i < CAB_VIEW_MAX_TRACK_TILES; i++) {
+			if (!ft.Follow(tile, td)) break;
+			/* Do not turn around at the end of the line. */
+			if (ft.new_tile == tile) break;
+
+			TrackdirBits options = ft.new_td_bits;
+			if (KillFirstBit(options) != TRACKDIR_BIT_NONE) {
+				/* A junction: only continue when we know which way the train goes. */
+				TrackdirBits reserved = options & TrackBitsToTrackdirBits(GetReservedTrackbits(ft.new_tile));
+				if (!HasExactlyOneBit(reserved)) break;
+				options = reserved;
+			}
+
+			tile = ft.new_tile;
+			td = FindFirstTrackdir(options);
+
+			int x = TileX(tile) * TILE_SIZE + TILE_SIZE / 2;
+			int y = TileY(tile) * TILE_SIZE + TILE_SIZE / 2;
+			Point pt = RemapCoords(x, y, GetSlopePixelZ(x, y));
+			Point d = {pt.x - base.x, pt.y - base.y};
+
+			float e = (d.x / ax) * (d.x / ax) + (d.y / ay) * (d.y / ay);
+			if (e >= 1.0f) {
+				/* Bring the point back onto the edge of the ellipse. */
+				float f = 1.0f / std::sqrt(e);
+				return Point{static_cast<int>(d.x * f), static_cast<int>(d.y * f)};
+			}
+			last = d;
+		}
+
+		return last;
+	}
 
 	/**
 	 * Determine where the camera should be, relative to the vehicle.
@@ -81,21 +157,27 @@ private:
 	{
 		if (!_cab_view_look_ahead) return {0, 0};
 
+		/* Look further ahead the faster we go, but keep some look-ahead when standing still. */
+		int max_speed = v->GetDisplayMaxSpeed();
+		float speed_frac = max_speed > 0 ? std::clamp(static_cast<float>(v->GetDisplaySpeed()) / max_speed, 0.0f, 1.0f) : 0.0f;
+		float reach = CAB_VIEW_REACH_MIN + (CAB_VIEW_REACH_MAX - CAB_VIEW_REACH_MIN) * speed_frac;
+		float ax = reach * this->viewport->virtual_width / 2;
+		float ay = reach * this->viewport->virtual_height / 2;
+		if (ax < 1 || ay < 1) return {0, 0};
+
+		if (v->type == VEH_TRAIN) {
+			std::optional<Point> target = GetTrackLookAheadTarget(Train::From(v), ax, ay);
+			if (target.has_value()) return *target;
+		}
+
 		/* Direction of travel projected onto the screen, see RemapCoords. */
 		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
 		float sx = (diff.y - diff.x) * 2.0f;
 		float sy = static_cast<float>(diff.y + diff.x);
 		float len = std::hypot(sx, sy);
 		if (len == 0) return {0, 0};
-		sx /= len;
-		sy /= len;
 
-		/* Look further ahead the faster we go, but keep some look-ahead when standing still. */
-		int max_speed = v->GetDisplayMaxSpeed();
-		float speed_frac = max_speed > 0 ? std::clamp(static_cast<float>(v->GetDisplaySpeed()) / max_speed, 0.0f, 1.0f) : 0.0f;
-		float reach = CAB_VIEW_REACH_MIN + (CAB_VIEW_REACH_MAX - CAB_VIEW_REACH_MIN) * speed_frac;
-
-		return {static_cast<int>(sx * reach * this->viewport->virtual_width / 2), static_cast<int>(sy * reach * this->viewport->virtual_height / 2)};
+		return {static_cast<int>(sx / len * ax), static_cast<int>(sy / len * ay)};
 	}
 
 	/** Push the current look-ahead offset to the viewport. */
@@ -169,6 +251,87 @@ private:
 		return ScaleGUITrad(5);
 	}
 
+	/**
+	 * Get the point on a circle at a given position of the speedometer dial.
+	 * @param cx Horizontal centre of the dial.
+	 * @param cy Vertical centre of the dial.
+	 * @param radius Distance from the centre.
+	 * @param fraction Position on the dial, 0 for standstill and 1 for maximum speed.
+	 * @return The point on the screen.
+	 */
+	static Point GetDialPoint(int cx, int cy, float radius, float fraction)
+	{
+		float angle = (CAB_VIEW_DIAL_START - CAB_VIEW_DIAL_SWEEP * fraction) * static_cast<float>(M_PI) / 180.0f;
+		return {cx + static_cast<int>(std::lround(radius * std::cos(angle))), cy - static_cast<int>(std::lround(radius * std::sin(angle)))};
+	}
+
+	/**
+	 * Draw an arc of the speedometer dial.
+	 * @param cx Horizontal centre of the dial.
+	 * @param cy Vertical centre of the dial.
+	 * @param radius Radius of the arc.
+	 * @param from Start of the arc, as fraction of the dial.
+	 * @param to End of the arc, as fraction of the dial.
+	 * @param colour Colour of the arc.
+	 * @param width Width of the line.
+	 */
+	static void DrawDialArc(int cx, int cy, float radius, float from, float to, PixelColour colour, int width)
+	{
+		if (to <= from) return;
+		/* Roughly one segment per 5 degrees. */
+		int segments = std::max(1, static_cast<int>(std::ceil((to - from) * CAB_VIEW_DIAL_SWEEP / 5.0f)));
+		Point prev = GetDialPoint(cx, cy, radius, from);
+		for (int i = 1; i <= segments; i++) {
+			Point next = GetDialPoint(cx, cy, radius, from + (to - from) * i / segments);
+			GfxDrawLine(prev.x, prev.y, next.x, next.y, colour, width);
+			prev = next;
+		}
+	}
+
+	/**
+	 * Draw the speedometer dial.
+	 * @param r Area to draw the dial in; it is centred in it.
+	 * @param speed_frac Current speed as fraction of the maximum speed of the vehicle.
+	 */
+	static void DrawSpeedometer(const Rect &r, float speed_frac)
+	{
+		/* The dial sweeps 270 degrees, so it is a bit wider than high. */
+		int radius = std::min(r.Width() / 2, r.Height() / 2);
+		int cx = (r.left + r.right) / 2;
+		int cy = (r.top + r.bottom) / 2;
+		int line = std::max(1, ScaleGUITrad(1));
+
+		/* The face. */
+		std::vector<Point> face;
+		for (int i = 0; i < 48; i++) {
+			float angle = i * 2.0f * static_cast<float>(M_PI) / 48;
+			face.push_back({cx + static_cast<int>(std::lround(radius * std::cos(angle))), cy + static_cast<int>(std::lround(radius * std::sin(angle)))});
+		}
+		GfxFillPolygon(face, CAB_VIEW_DIAL_COLOUR);
+
+		/* The scale, with a red zone beyond the maximum speed of the vehicle. */
+		float scale_radius = radius - 2.0f * line;
+		DrawDialArc(cx, cy, scale_radius, 0.0f, CAB_VIEW_DIAL_MAX_SPEED, PC_GREY, line);
+		DrawDialArc(cx, cy, scale_radius, CAB_VIEW_DIAL_MAX_SPEED, 1.0f, PC_RED, line * 2);
+		for (int i = 0; i <= CAB_VIEW_DIAL_TICKS; i++) {
+			float f = static_cast<float>(i) / CAB_VIEW_DIAL_TICKS;
+			bool major = i % 2 == 0;
+			Point outer = GetDialPoint(cx, cy, scale_radius, f);
+			Point inner = GetDialPoint(cx, cy, scale_radius - (major ? 4 : 2) * line, f);
+			GfxDrawLine(outer.x, outer.y, inner.x, inner.y, major ? PC_WHITE : PC_GREY, line);
+		}
+
+		/* What part of the scale we are using. */
+		float clamped = std::clamp(speed_frac * CAB_VIEW_DIAL_MAX_SPEED, 0.0f, 1.0f);
+		DrawDialArc(cx, cy, scale_radius - 6.0f * line, 0.0f, clamped, speed_frac > 0.95f ? PC_YELLOW : PC_GREEN, line * 2);
+
+		/* The needle, with its hub. */
+		Point tip = GetDialPoint(cx, cy, scale_radius - 2.0f * line, clamped);
+		GfxDrawLine(cx, cy, tip.x, tip.y, PC_ORANGE, line * 2);
+		int hub = 2 * line;
+		GfxFillRect(cx - hub, cy - hub, cx + hub, cy + hub, PC_WHITE);
+	}
+
 public:
 	CabViewWindow(WindowDesc &desc, WindowNumber window_number) : Window(desc)
 	{
@@ -195,9 +358,20 @@ public:
 		switch (widget) {
 			case WID_CV_DASHBOARD: {
 				int sep = WidgetDimensions::scaled.vsep_normal;
-				int speed_column = GetCharacterHeight(FS_LARGE) + sep + GetGaugeHeight() + sep + GetCharacterHeight(FS_SMALL);
-				int text_column = GetCharacterHeight(FS_NORMAL) * 2 + sep;
+				int speed_column = std::max(ScaleGUITrad(CAB_VIEW_DIAL_HEIGHT), GetCharacterHeight(FS_LARGE) + sep + GetCharacterHeight(FS_SMALL));
+				int text_column = GetCharacterHeight(FS_NORMAL) * 2 + sep + GetGaugeHeight();
 				size.height = std::max(speed_column, text_column) + WidgetDimensions::scaled.frametext.Vertical() + WidgetDimensions::scaled.bevel.Vertical();
+
+				/* Make room for the speed of this vehicle, but at least for three digits. */
+				const Vehicle *v = Vehicle::Get(this->window_number);
+				uint64_t widest_speed = PackVelocity(std::max(v->GetDisplayMaxSpeed(), 999), v->type);
+				int digits_width = std::max(GetStringBoundingBox(GetString(STR_CAB_VIEW_SPEED, widest_speed), FS_LARGE).width, GetStringBoundingBox(GetString(STR_CAB_VIEW_MAX_SPEED, widest_speed), FS_SMALL).width);
+				int gap = WidgetDimensions::scaled.hsep_wide * 2;
+				this->speed_width = speed_column + gap + digits_width;
+				this->load_width = std::max<int>(GetStringBoundingBox(GetString(STR_CAB_VIEW_LOAD, 100)).width, ScaleGUITrad(80));
+
+				int info_width = ScaleGUITrad(160);
+				size.width = std::max<uint>(size.width, this->speed_width + gap + info_width + gap + this->load_width + WidgetDimensions::scaled.frametext.Horizontal() + WidgetDimensions::scaled.bevel.Horizontal());
 				break;
 			}
 
@@ -239,31 +413,31 @@ public:
 
 		/* The dashboard itself: a dark display. */
 		Rect ir = r.Shrink(WidgetDimensions::scaled.bevel);
-		GfxFillRect(ir, PC_BLACK);
+		GfxFillRect(ir, CAB_VIEW_DASHBOARD_COLOUR);
 		ir = ir.Shrink(WidgetDimensions::scaled.frametext);
 
 		int sep = WidgetDimensions::scaled.vsep_normal;
 		int gap = WidgetDimensions::scaled.hsep_wide * 2;
-		int column_width = (ir.Width() - 2 * gap);
 
-		/* Left: speedometer. */
-		Rect speed = ir.WithWidth(column_width * 3 / 10, rtl);
-		int y = speed.top;
-		DrawString(speed.left, speed.right, y, GetString(STR_CAB_VIEW_SPEED, PackVelocity(v->GetDisplaySpeed(), v->type)), TC_WHITE, SA_LEFT, false, FS_LARGE);
-		y += GetCharacterHeight(FS_LARGE) + sep;
-
+		/* Left: speedometer dial with the speed next to it. */
+		Rect speed = ir.WithWidth(this->speed_width, rtl);
 		int max_speed = v->GetDisplayMaxSpeed();
 		float speed_frac = max_speed > 0 ? static_cast<float>(v->GetDisplaySpeed()) / max_speed : 0.0f;
-		PixelColour speed_colour = speed_frac > 0.95f ? PC_YELLOW : PC_GREEN;
-		DrawGauge({speed.left, y, speed.right, y + GetGaugeHeight() - 1}, speed_frac, speed_colour);
-		y += GetGaugeHeight() + sep;
 
+		Rect dial = speed.WithWidth(speed.Height(), rtl);
+		DrawSpeedometer(dial, speed_frac);
+
+		Rect digits = speed.Indent(dial.Width() + gap, rtl);
+		int text_height = GetCharacterHeight(FS_LARGE) + sep + GetCharacterHeight(FS_SMALL);
+		int y = CentreBounds(digits.top, digits.bottom, text_height);
+		DrawString(digits.left, digits.right, y, GetString(STR_CAB_VIEW_SPEED, PackVelocity(v->GetDisplaySpeed(), v->type)), TC_WHITE, SA_LEFT, false, FS_LARGE);
+		y += GetCharacterHeight(FS_LARGE) + sep;
 		if (max_speed > 0) {
-			DrawString(speed.left, speed.right, y, GetString(STR_CAB_VIEW_MAX_SPEED, PackVelocity(max_speed, v->type)), TC_SILVER, SA_LEFT, false, FS_SMALL);
+			DrawString(digits.left, digits.right, y, GetString(STR_CAB_VIEW_MAX_SPEED, PackVelocity(max_speed, v->type)), TC_SILVER, SA_LEFT, false, FS_SMALL);
 		}
 
 		/* Right: load. */
-		Rect load = ir.WithWidth(column_width * 2 / 10, !rtl);
+		Rect load = ir.WithWidth(this->load_width, !rtl);
 		uint capacity = 0;
 		uint stored = 0;
 		for (const Vehicle *u = v; u != nullptr; u = u->Next()) {
@@ -280,7 +454,7 @@ public:
 		}
 
 		/* Middle: where we are heading and what we are doing. */
-		Rect info = ir.Indent(column_width * 3 / 10 + gap, rtl).Indent(column_width * 2 / 10 + gap, !rtl);
+		Rect info = ir.Indent(this->speed_width + gap, rtl).Indent(this->load_width + gap, !rtl);
 		y = info.top;
 		DrawString(info.left, info.right, y, GetDestinationString(v), TC_SILVER);
 		y += GetCharacterHeight(FS_NORMAL) + sep;
@@ -361,6 +535,35 @@ static WindowDesc _cab_view_desc(
 	{},
 	_nested_cab_view_widgets
 );
+
+/**
+ * Draw the icon of the cab view button: the front of a locomotive, with its windscreen and headlights.
+ * It is drawn instead of using a sprite, so it stays sharp at any interface size.
+ * @param r Area of the button.
+ */
+void DrawCabViewIcon(const Rect &r)
+{
+	/* The icon is designed on a grid of 11x12 units. */
+	static constexpr int GRID_W = 11;
+	static constexpr int GRID_H = 12;
+	int unit = std::max(1, std::min(r.Width() / (GRID_W + 3), r.Height() / (GRID_H + 2)));
+	int left = CentreBounds(r.left, r.right, GRID_W * unit);
+	int top = CentreBounds(r.top, r.bottom, GRID_H * unit);
+
+	/* Fill grid cells [x1, x2) x [y1, y2). */
+	auto cells = [&](int x1, int y1, int x2, int y2, PixelColour colour) {
+		GfxFillRect(left + x1 * unit, top + y1 * unit, left + x2 * unit - 1, top + y2 * unit - 1, colour);
+	};
+
+	cells(1, 0, 10, 1, PC_DARK_GREY);  // roof
+	cells(0, 1, 11, 11, PC_DARK_RED);  // body outline
+	cells(1, 1, 10, 10, PC_RED);       // body
+	cells(1, 2, 5, 6, PC_LIGHT_BLUE);  // windscreen, left
+	cells(6, 2, 10, 6, PC_LIGHT_BLUE); // windscreen, right
+	cells(2, 7, 4, 9, PC_YELLOW);      // headlight, left
+	cells(7, 7, 9, 9, PC_YELLOW);      // headlight, right
+	cells(0, 11, 11, 12, PC_BLACK);    // buffer beam
+}
 
 /**
  * Show the cab view of a vehicle.
