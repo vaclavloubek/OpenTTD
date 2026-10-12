@@ -124,6 +124,7 @@ struct CabViewWindow : Window {
 private:
 	float offset_x = 0; ///< Current look-ahead offset in virtual viewport coordinates.
 	float offset_y = 0; ///< Current look-ahead offset in virtual viewport coordinates.
+	ZoomLevel map_zoom = ZoomLevel::Normal; ///< Zoom of the map view, kept while the 3D view is shown, see #UpdateViewport.
 	uint dashboard_timer = 0; ///< Milliseconds since the dashboard was last redrawn.
 	int speed_width = 0; ///< Width of the speed part of the dashboard, dial included.
 	int load_width = 0; ///< Width of the load part of the dashboard.
@@ -384,6 +385,22 @@ private:
 	}
 
 	/**
+	 * Have a viewport only while the map view is shown. Left behind the 3D view, it would still follow the train,
+	 * and as a viewport moves the pixels on the screen along when it scrolls, the 3D view would shake to and fro.
+	 */
+	void UpdateViewport()
+	{
+		if (this->Is3D()) {
+			if (this->viewport == nullptr) return;
+			this->map_zoom = this->viewport->zoom;
+			this->viewport.reset();
+		} else if (this->viewport == nullptr) {
+			this->GetWidget<NWidgetViewport>(WID_CV_VIEWPORT)->InitializeViewport(this, static_cast<VehicleID>(this->window_number), this->map_zoom);
+			this->ApplyOffset();
+		}
+	}
+
+	/**
 	 * Get the text describing where the vehicle is heading.
 	 * @param v The vehicle.
 	 * @return The destination text.
@@ -537,8 +554,8 @@ public:
 		const Vehicle *v = Vehicle::Get(window_number);
 		this->owner = v->owner;
 
-		ZoomLevel zoom = std::clamp(ScaleZoomGUI(ZoomLevel::In2x), _settings_client.gui.zoom_min, _settings_client.gui.zoom_max);
-		this->GetWidget<NWidgetViewport>(WID_CV_VIEWPORT)->InitializeViewport(this, static_cast<VehicleID>(window_number), zoom);
+		this->map_zoom = std::clamp(ScaleZoomGUI(ZoomLevel::In2x), _settings_client.gui.zoom_min, _settings_client.gui.zoom_max);
+		this->GetWidget<NWidgetViewport>(WID_CV_VIEWPORT)->InitializeViewport(this, static_cast<VehicleID>(window_number), this->map_zoom);
 
 		/* Start in the look-ahead position, instead of sliding into it. */
 		Point target = this->GetLookAheadTarget(v);
@@ -693,15 +710,15 @@ public:
 
 	void OnRealtimeTick(uint delta_ms) override
 	{
-		if (this->viewport == nullptr) return;
-
-		/* Ease towards the target, so turns and reversing don't make the camera jump. */
-		const Vehicle *v = Vehicle::Get(this->window_number);
-		Point target = this->GetLookAheadTarget(v);
-		float alpha = 1.0f - std::exp(-static_cast<float>(delta_ms) / CAB_VIEW_EASE_MS);
-		this->offset_x += (target.x - this->offset_x) * alpha;
-		this->offset_y += (target.y - this->offset_y) * alpha;
-		this->ApplyOffset();
+		if (this->viewport != nullptr) {
+			/* Ease towards the target, so turns and reversing don't make the camera jump. */
+			const Vehicle *v = Vehicle::Get(this->window_number);
+			Point target = this->GetLookAheadTarget(v);
+			float alpha = 1.0f - std::exp(-static_cast<float>(delta_ms) / CAB_VIEW_EASE_MS);
+			this->offset_x += (target.x - this->offset_x) * alpha;
+			this->offset_y += (target.y - this->offset_y) * alpha;
+			this->ApplyOffset();
+		}
 
 		if (this->Is3D()) {
 			/* The time is measured here, as delta_ms is rounded down and would make the pace uneven. */
@@ -796,6 +813,7 @@ public:
 				this->drawn_camera = this->Get3DCamera();
 			}
 		}
+		this->UpdateViewport();
 
 		if (this->viewport != nullptr) HandleZoomMessage(this, *this->viewport, WID_CV_ZOOM_IN, WID_CV_ZOOM_OUT);
 		/* Zoom and look-ahead are for the map view only. */

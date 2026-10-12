@@ -70,6 +70,11 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   snímky. Jinak se obrázek zmenší (až na 50 % v každém směru) a na obrazovku se hladce zvětší; když nestačí ani
   to, kreslí se na každý druhý (třetí…) snímek, rovnoměrně. Pomalejší kreslení každý druhý snímek na Macu
   cukalo. Když vlak stojí, překresluje se jednou za sekundu.
+- Při 3D pohledu okno Kabina nemá viewport mapy (zruší se a při návratu na mapu se vytvoří znovu se stejným
+  přiblížením). Skrytý viewport za 3D pohledem dál sledoval vlak, a když se viewport posune, hra posune i jeho
+  pixely na obrazovce: hotový 3D obrázek se tak na 2 z 5 snímků ukázal posunutý o 8–12 px šikmo (2:1), což byl
+  hlavní zdroj třesení „ze strany na stranu“ na Macu. Interní snímky rendereru to neukázaly; našel to až záznam
+  obrazovky (na Linuxu `ffmpeg -f x11grab`, posun vzdálené části obrazu mezi snímky).
 - **Měření**: hru spustit s `-d misc=3`, do logu se pak u každého snímku píše čas přípravy, vyplnění a výstupu
   a změny tempa a velikosti obrázku; s `-d misc=4` i čas a poloha kamery každého snímku (na kontrolu plynulosti).
   Linux VM se 4 jádry, okno 1268×620 px (rozhraní 2×): příprava ~3 ms, vyplnění ~12–15 ms, výstup ~2 ms, tedy
