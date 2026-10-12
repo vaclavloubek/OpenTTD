@@ -46,6 +46,7 @@
 #include "thread.h"
 
 #include <chrono>
+#include <functional>
 
 #include "safeguards.h"
 
@@ -69,7 +70,9 @@ constexpr float SLEEPER_WIDTH = 0.9f; ///< Width of a sleeper, along the track.
 constexpr float SLEEPER_SPACING = 2.0f; ///< Distance between sleepers.
 constexpr float BOX_DIST = 24.0f * TILE; ///< Platforms and buildings are drawn up to this distance.
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
+constexpr size_t MAX_NEW_TEXTURES_TIMED = 32; ///< Pictures that make more new textures don't count for the average time of a picture.
 constexpr int MAX_THREADS = 8; ///< At most this many threads draw the picture.
+constexpr int PICTURES_PER_SCALE = 10; ///< Pictures to draw at a size before changing it again, so it does not keep changing.
 constexpr int STRIPE_HEIGHT = 4; ///< Height of the stripes of rows the threads draw.
 
 /** A colour with floating point channels in the range 0..255. */
@@ -342,7 +345,14 @@ struct ScreenTriangle {
 /** The renderer, with its buffers and caches. */
 class Renderer {
 public:
-	void Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_id);
+	void Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_id, float budget_ms);
+
+	/**
+	 * Get how long making a picture takes, on average.
+	 * @param scale Size of the picture compared to the view.
+	 * @return The time in milliseconds; 0 before the first picture.
+	 */
+	float GetFrameTime(float scale) const { return this->fixed_ms + this->fill_ms * scale * scale; }
 
 	void Reset()
 	{
@@ -355,14 +365,20 @@ public:
 	}
 
 private:
-	int width = 0; ///< Width of the view.
-	int height = 0; ///< Height of the view.
+	int width = 0; ///< Width of the picture.
+	int height = 0; ///< Height of the picture.
+	int view_width = 0; ///< Width of the view on the screen; the picture is scaled to it.
+	int view_height = 0; ///< Height of the view on the screen; the picture is scaled to it.
+	float scale = 1.0f; ///< Size of the picture compared to the view, smaller when drawing takes too long.
+	int pictures_at_scale = 0; ///< Pictures drawn since #scale last changed.
 	std::vector<uint32_t> frame; ///< Colour buffer, see #Pack.
 	std::vector<float> depth; ///< Inverse depth buffer; 0 is infinitely far.
 	Camera cam; ///< The current camera.
 	bool frame_valid = false; ///< Whether #frame holds a finished picture.
 	CabViewCamera frame_camera; ///< Camera of the picture in #frame.
 	uint32_t frame_id = 0; ///< Identification of the picture in #frame, see #DrawCabView3D.
+	float fixed_ms = 0; ///< Average time (in milliseconds) of the parts of making a picture that don't depend on its size.
+	float fill_ms = 0; ///< Average time (in milliseconds) filling a picture of the size of the view takes.
 
 	std::unordered_map<SpriteID, RawSprite> sprites; ///< Sprites loaded so far.
 	std::unordered_map<std::vector<int32_t>, GroundTexture, TextureKeyHash> textures; ///< Ground textures put together so far.
@@ -387,8 +403,30 @@ private:
 	void AddTile(TileIndex tile, float dist);
 	void AddTrack(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddBox(const BoxSpriteToDraw &box, int ground_z);
+	void ChooseScale(float budget_ms);
 	void Output(const Rect &r);
 };
+
+/**
+ * Run a job on several threads at once.
+ * @param job The job; it gets the number of its part and the number of parts.
+ * @return The number of parts.
+ */
+static int RunOnThreads(const std::function<void(int, int)> &job)
+{
+	int parts = std::clamp<int>(std::thread::hardware_concurrency(), 1, MAX_THREADS);
+	std::vector<std::thread> threads;
+	for (int i = 1; i < parts; i++) {
+		std::thread &thread = threads.emplace_back();
+		if (!StartNewThread(&thread, "ottd:cab3d", [&job, i, parts]() { job(i, parts); })) {
+			threads.pop_back();
+			job(i, parts);
+		}
+	}
+	job(0, parts);
+	for (std::thread &thread : threads) thread.join();
+	return parts;
+}
 
 /**
  * Get a sprite as loaded from the graphics files.
@@ -1067,13 +1105,56 @@ void Renderer::AddTrack(TileIndex tile, const std::array<float, CORNER_END> &cor
 }
 
 /**
- * Put the finished picture on the screen, as a sprite of the current blitter.
+ * Put the finished picture on the screen, scaled to the view when it is smaller.
  * @param r Where on the screen.
  */
 void Renderer::Output(const Rect &r)
 {
 	Blitter *blitter = BlitterFactory::GetCurrentBlitter();
 	const DrawPixelInfo *dpi = _cur_dpi;
+
+	/* Where the pixels of the view are in the picture, which may be smaller: the first of the two columns
+	 * (rows) of the picture to mix, and how much of the second one, out of 256. Mixed smoothly, so it does
+	 * not look blocky. */
+	auto map_axis = [](int view_size, int pic_size, std::vector<int> &first, std::vector<uint32_t> &weight) {
+		first.resize(view_size);
+		weight.resize(view_size);
+		float step = static_cast<float>(pic_size) / view_size;
+		for (int i = 0; i < view_size; i++) {
+			float p = std::clamp((i + 0.5f) * step - 0.5f, 0.0f, static_cast<float>(pic_size - 1));
+			first[i] = std::min(static_cast<int>(p), std::max(pic_size - 2, 0));
+			weight[i] = pic_size > 1 ? static_cast<uint32_t>((p - first[i]) * 256 + 0.5f) : 0;
+		}
+	};
+	std::vector<int> col, row;
+	std::vector<uint32_t> col_weight, row_weight;
+	map_axis(this->view_width, this->width, col, col_weight);
+	map_axis(this->view_height, this->height, row, row_weight);
+	bool scaled = this->width != this->view_width || this->height != this->view_height;
+	int next_col = this->width > 1 ? 1 : 0;
+	int next_row = this->height > 1 ? this->width : 0;
+
+	/* Mix two colours; red and blue are mixed at once, as they are 16 bits apart. */
+	auto mix = [](uint32_t a, uint32_t b, uint32_t w) -> uint32_t {
+		uint32_t rb = ((a & 0xFF00FF) * (256 - w) + (b & 0xFF00FF) * w) >> 8;
+		uint32_t g = ((a & 0x00FF00) * (256 - w) + (b & 0x00FF00) * w) >> 8;
+		return (rb & 0xFF00FF) | (g & 0x00FF00);
+	};
+	/* Get the colours of columns [x0, x1] of a row of the view. */
+	std::vector<std::vector<uint32_t>> rows(MAX_THREADS);
+	auto get_row = [&](int y, int x0, int x1, std::vector<uint32_t> &out) -> const uint32_t * {
+		if (!scaled) return &this->frame[static_cast<size_t>(y) * this->width + x0];
+		out.resize(x1 - x0 + 1);
+		const uint32_t *top = &this->frame[static_cast<size_t>(row[y]) * this->width];
+		const uint32_t *bottom = top + next_row;
+		uint32_t fy = row_weight[y];
+		for (int x = x0; x <= x1; x++) {
+			int c = col[x];
+			uint32_t fx = col_weight[x];
+			out[x - x0] = mix(mix(top[c], top[c + next_col], fx), mix(bottom[c], bottom[c + next_col], fx), fy);
+		}
+		return out.data();
+	};
 
 	if (blitter->GetScreenDepth() == 32) {
 		/* All 32bpp blitters keep one Colour per pixel on the screen. Clear the area first,
@@ -1084,12 +1165,21 @@ void Renderer::Output(const Rect &r)
 		int right = std::min(r.right, dpi->left + dpi->width - 1);
 		int top = std::max(r.top, dpi->top);
 		int bottom = std::min(r.bottom, dpi->top + dpi->height - 1);
-		for (int y = top; y <= bottom; y++) {
-			Colour *dst = static_cast<Colour *>(blitter->MoveTo(dpi->dst_ptr, left - dpi->left, y - dpi->top));
-			const uint32_t *src = &this->frame[static_cast<size_t>(y - r.top) * this->width + (left - r.left)];
-			for (int x = left; x <= right; x++, dst++, src++) {
-				*dst = Colour(GB(*src, 16, 8), GB(*src, 8, 8), GB(*src, 0, 8));
+		if (left > right || top > bottom) return;
+		auto copy_rows = [&](int part, int parts) {
+			for (int y = top + part; y <= bottom; y += parts) {
+				Colour *dst = static_cast<Colour *>(blitter->MoveTo(dpi->dst_ptr, left - dpi->left, y - dpi->top));
+				const uint32_t *src = get_row(y - r.top, left - r.left, right - r.left, rows[part]);
+				for (int x = left; x <= right; x++, dst++, src++) {
+					*dst = Colour(GB(*src, 16, 8), GB(*src, 8, 8), GB(*src, 0, 8));
+				}
 			}
+		};
+		/* Small parts, e.g. under a tooltip, are not worth starting threads for. */
+		if ((right - left + 1) * (bottom - top + 1) < 65536) {
+			copy_rows(0, 1);
+		} else {
+			RunOnThreads(copy_rows);
 		}
 		return;
 	}
@@ -1097,22 +1187,22 @@ void Renderer::Output(const Rect &r)
 	/* Other blitters: let the blitter encode the picture as a sprite of palette colours. */
 	SpriteLoader::SpriteCollection collection;
 	SpriteLoader::Sprite &sprite = collection[ZoomLevel::Min];
-	sprite.AllocateData(ZoomLevel::Min, static_cast<size_t>(this->width) * this->height);
-	sprite.width = this->width;
-	sprite.height = this->height;
+	sprite.AllocateData(ZoomLevel::Min, static_cast<size_t>(this->view_width) * this->view_height);
+	sprite.width = this->view_width;
+	sprite.height = this->view_height;
 	sprite.x_offs = 0;
 	sprite.y_offs = 0;
 	sprite.colours = SpriteComponent::Palette;
 
 	/* Ordered dither, so smooth gradients don't band where colours are rounded to the palette. */
 	static constexpr std::array<std::array<int, 4>, 4> BAYER = {{{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}}};
-	for (int y = 0; y < this->height; y++) {
-		for (int x = 0; x < this->width; x++) {
-			size_t idx = static_cast<size_t>(y) * this->width + x;
+	for (int y = 0; y < this->view_height; y++) {
+		const uint32_t *src = get_row(y, 0, this->view_width - 1, rows[0]);
+		for (int x = 0; x < this->view_width; x++) {
 			int d = (BAYER[y & 3][x & 3] - 8) * 3 / 4;
-			uint32_t c = this->frame[idx];
+			uint32_t c = src[x];
 			auto channel = [&](uint8_t start) { return static_cast<uint8_t>(std::clamp<int>(GB(c, start, 8) + d, 0, 255)); };
-			SpriteLoader::CommonPixel &p = sprite.data[idx];
+			SpriteLoader::CommonPixel &p = sprite.data[static_cast<size_t>(y) * this->view_width + x];
 			p.a = 0xFF;
 			p.m = GetNearestColourIndex(channel(16), channel(8), channel(0));
 		}
@@ -1128,8 +1218,9 @@ void Renderer::Output(const Rect &r)
  * @param r Where on the screen.
  * @param camera Where the camera is.
  * @param frame_id Number of the picture, see #DrawCabView3D.
+ * @param budget_ms Time making a picture may take, see #DrawCabView3D.
  */
-void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_id)
+void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_id, float budget_ms)
 {
 	if (camera.dark) {
 		GfxFillRect(r, PC_BLACK);
@@ -1138,7 +1229,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	if (r.Width() <= 0 || r.Height() <= 0) return;
 
 	/* The window is often drawn in several parts; draw the picture only once. */
-	if (this->frame_valid && this->frame_id == frame_id && this->frame_camera == camera && this->width == r.Width() && this->height == r.Height()) {
+	if (this->frame_valid && this->frame_id == frame_id && this->frame_camera == camera && this->view_width == r.Width() && this->view_height == r.Height()) {
 		this->Output(r);
 		return;
 	}
@@ -1146,9 +1237,12 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	auto start = std::chrono::steady_clock::now();
 	if (this->textures.size() >= MAX_TEXTURES) this->textures.clear();
 	if (this->box_textures.size() >= MAX_TEXTURES) this->box_textures.clear();
+	size_t old_textures = this->textures.size() + this->box_textures.size();
 
-	this->width = r.Width();
-	this->height = r.Height();
+	this->view_width = r.Width();
+	this->view_height = r.Height();
+	this->width = std::max(1, static_cast<int>(std::lround(r.Width() * this->scale)));
+	this->height = std::max(1, static_cast<int>(std::lround(r.Height() * this->scale)));
 	size_t pixels = static_cast<size_t>(this->width) * this->height;
 	this->frame.resize(pixels);
 	this->depth.assign(pixels, 0.0f);
@@ -1194,17 +1288,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 
 	/* Fill the triangles in stripes of rows, on several threads. */
 	auto prepared = std::chrono::steady_clock::now();
-	int bands = std::clamp<int>(std::thread::hardware_concurrency(), 1, MAX_THREADS);
-	std::vector<std::thread> threads;
-	for (int i = 1; i < bands; i++) {
-		std::thread &thread = threads.emplace_back();
-		if (!StartNewThread(&thread, "ottd:cab3d", [this, i, bands]() { this->Rasterise(i, bands); })) {
-			threads.pop_back();
-			this->Rasterise(i, bands);
-		}
-	}
-	this->Rasterise(0, bands);
-	for (std::thread &thread : threads) thread.join();
+	int bands = RunOnThreads([this](int stripe, int stripes) { this->Rasterise(stripe, stripes); });
 
 	this->frame_valid = true;
 	this->frame_id = frame_id;
@@ -1214,12 +1298,49 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	this->Output(r);
 	auto done = std::chrono::steady_clock::now();
 
+	/* Pictures that had to put together many new textures, like the first one, take much longer than usual; leave them out. */
+	if (this->textures.size() + this->box_textures.size() < old_textures + MAX_NEW_TEXTURES_TIMED) {
+		float fixed = std::chrono::duration<float, std::milli>((prepared - start) + (done - rendered)).count();
+		float area = static_cast<float>(this->width * this->height) / (this->view_width * this->view_height);
+		float fill = std::chrono::duration<float, std::milli>(rendered - prepared).count() / area;
+		if (this->fill_ms <= 0) {
+			this->fixed_ms = fixed;
+			this->fill_ms = fill;
+		} else {
+			this->fixed_ms += (std::min(fixed, 3 * this->fixed_ms) - this->fixed_ms) * 0.1f;
+			this->fill_ms += (std::min(fill, 3 * this->fill_ms) - this->fill_ms) * 0.1f;
+		}
+	}
+	this->ChooseScale(budget_ms);
+
 	Debug(misc, 3, "[CabView3D] camera {:.1f},{:.1f},{:.1f} yaw {:.2f}", camera.x, camera.y, camera.z, camera.yaw);
-	Debug(misc, 3, "[CabView3D] {}x{}, {} tiles, {} triangles, prepare {} us, fill {} us ({} threads), output {} us, {} textures",
-		this->width, this->height, visible.size(), this->triangles.size(),
+	Debug(misc, 3, "[CabView3D] {}x{} for {}x{}, {} tiles, {} triangles, prepare {} us, fill {} us ({} threads), output {} us, {} textures",
+		this->width, this->height, this->view_width, this->view_height, visible.size(), this->triangles.size(),
 		std::chrono::duration_cast<std::chrono::microseconds>(prepared - start).count(),
 		std::chrono::duration_cast<std::chrono::microseconds>(rendered - prepared).count(), bands,
 		std::chrono::duration_cast<std::chrono::microseconds>(done - rendered).count(), this->textures.size());
+}
+
+/**
+ * Make the picture smaller when making it takes longer than there is time for, so the view stays smooth,
+ * and larger again when there is time. The picture is scaled to the view smoothly, and the graphics of
+ * the game are smooth too, so a somewhat smaller picture hardly shows.
+ * @param budget_ms Time there is for making a picture, in milliseconds.
+ */
+void Renderer::ChooseScale(float budget_ms)
+{
+	if (++this->pictures_at_scale < PICTURES_PER_SCALE || budget_ms <= 0 || this->fill_ms <= 0) return;
+
+	/* The time to fill the picture goes with its area. Steps of 5%, so small changes in time don't change the size. */
+	float fit = std::sqrt(std::max(budget_ms * 0.9f - this->fixed_ms, 0.0f) / this->fill_ms);
+	float scale = std::clamp(std::floor(fit * 20) / 20, CAB_VIEW_3D_MIN_SCALE, 1.0f);
+	/* Only grow when there is clearly time for it, so the size does not go back and forth. */
+	if (scale > this->scale && this->GetFrameTime(scale) > budget_ms * 0.8f) scale = this->scale;
+	if (scale == this->scale) return;
+
+	Debug(misc, 3, "[CabView3D] picture at {:.0f}% of the view: there is {:.1f} ms, drawing at full size takes {:.1f} ms", scale * 100, budget_ms, this->GetFrameTime(1.0f));
+	this->scale = scale;
+	this->pictures_at_scale = 0;
 }
 
 /** The one renderer; all cab views draw one after the other. */
@@ -1232,10 +1353,21 @@ Renderer _renderer;
  * @param r Where on the screen.
  * @param camera Where the camera is.
  * @param frame_id Number of the picture; the picture is only drawn again when it or the camera changed.
+ * @param budget_ms Time (in milliseconds) making a picture may take; when it takes longer, the picture is made smaller.
  */
-void DrawCabView3D(const Rect &r, const CabViewCamera &camera, uint32_t frame_id)
+void DrawCabView3D(const Rect &r, const CabViewCamera &camera, uint32_t frame_id, float budget_ms)
 {
-	_renderer.Draw(r, camera, frame_id);
+	_renderer.Draw(r, camera, frame_id, budget_ms);
+}
+
+/**
+ * Get how long drawing a new picture of the 3D view from the cab takes, on average.
+ * @param scale Size of the picture compared to the view; the picture is made smaller when there is not enough time.
+ * @return The time in milliseconds; 0 before the first picture.
+ */
+float GetCabView3DFrameTime(float scale)
+{
+	return _renderer.GetFrameTime(scale);
 }
 
 /** Forget all loaded graphics and buffers, e.g. because the graphics may have changed. */

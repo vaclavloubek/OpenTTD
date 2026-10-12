@@ -58,13 +58,20 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - **Kamera** na čele vlaku ve výšce střechy (8 jednotek), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
   (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu a v tunelu je obraz černý.
 - **Plynulost**: vlak se ve hře posouvá po celých krocích (1/16 dlaždice), v 90 km/h jen asi každý třetí herní
-  tik, a herní tiky (27 ms) přicházejí jinak než snímky obrazovky, často po dvou. Kamera proto bere i rozjetý
-  krok (`progress`), pamatuje si posledních 8 tiků a obraz ukazuje okamžik o jeden tik pozadu, který běží
-  rovnoměrně podle hodin. Výška se na svazích vyhlazuje podle ujeté dráhy (ve hře stoupá po skocích).
-- Překresluje se jen při pohybu kamery, nejvýš ~30× za sekundu (při 60 Hz každý druhý snímek obrazovky, čas se
-  měří sám, protože `delta_ms` je zaokrouhlené dolů), když vlak stojí, jednou za sekundu.
-- **Měření**: hru spustit s `-d misc=3`, do logu se pak u každého snímku píše čas přípravy, vyplnění a výstupu.
-  Linux VM se 4 jádry, okno 1268×620 px (rozhraní 2×): příprava ~4 ms, vyplnění ~15–18 ms, výstup ~3 ms.
+  tik, a herní tiky (27 ms) přicházejí jinak než snímky obrazovky, často pozdě nebo po dvou (když kreslení
+  trvá dlouho). Kamera proto bere i rozjetý krok (`progress`), pamatuje si posledních 8 tiků a obraz ukazuje
+  okamžik asi 1,5 tiku pozadu. Ten běží podle hodin a podle tiků se mění jen jeho rychlost (nejvýš o 10 %),
+  takže se pohyb netřese (dřív se okamžik dorovnával skokem k tikům a blízké pražce se chvěly).
+  Výška se na svazích vyhlazuje podle ujeté dráhy (ve hře stoupá po skocích).
+- Překresluje se při pohybu kamery na každý snímek obrazovky (60×), když obrázek zabere nejvýš 65 % času mezi
+  snímky. Jinak se obrázek zmenší (až na 50 % v každém směru) a na obrazovku se hladce zvětší; když nestačí ani
+  to, kreslí se na každý druhý (třetí…) snímek, rovnoměrně. Pomalejší kreslení každý druhý snímek na Macu
+  cukalo. Když vlak stojí, překresluje se jednou za sekundu.
+- **Měření**: hru spustit s `-d misc=3`, do logu se pak u každého snímku píše čas přípravy, vyplnění a výstupu
+  a změny tempa a velikosti obrázku; s `-d misc=4` i čas a poloha kamery každého snímku (na kontrolu plynulosti).
+  Linux VM se 4 jádry, okno 1268×620 px (rozhraní 2×): příprava ~3 ms, vyplnění ~12–15 ms, výstup ~2 ms, tedy
+  30 snímků/s; v menším okně 60 snímků/s s obrázkem na 60 %. MacBook Air (Retina), výchozí velikost okna:
+  ~7 ms na obrázek (okno „Počet snímků za sekundu“, řádek „Vykreslování grafiky“), tedy 60 snímků/s.
 - Zatím chybí (krok 4): budovy, návěstidla, trolejové vedení, stromy, vozidla, mosty a portály tunelů (vlak zatím vjede
   „do kopce“), silnice jen jako textura země. Pravoúhlé zatáčky jsou ve hře velmi ostré, takže v nich kolej na
   okamžik zmizí ze záběru; svahy jsou strmé (50 %) stejně jako ve hře.
@@ -107,5 +114,5 @@ Síť je omezená: apt (archive.ubuntu.com), PyPI i cdn.openttd.org jsou blokova
   Pro kopcovitou mapu (3D) stačí v `test.cfg` změnit `terrain_type = 3` (a třeba `generation_seed`).
   AI staví trať jinde při každém spuštění.
   Pozor: `kill` hru neukončí, je potřeba `pkill -9 openttd`, jinak běží dvě hry přes sebe.
-- Ovládání: `python3 x.py click X Y`, `key F1`, `wheel X Y N`…; snímek obrazovky `import -display :99 -window root shot.png`
+- Ovládání: `python3 x.py click X Y`, `drag X1 Y1 X2 Y2`, `key F1`, `wheel X Y N`…; snímek obrazovky `import -display :99 -window root shot.png`
   nebo v konzoli hry příkaz `screenshot`. Konzole: `scrollto <tile>`, `pause`.

@@ -26,6 +26,7 @@
 #include "settings_type.h"
 #include "core/geometry_func.hpp"
 #include "cab_view_3d.h"
+#include "debug.h"
 
 #include <chrono>
 #include <deque>
@@ -69,10 +70,21 @@ static constexpr float CAB_VIEW_3D_TURN_DIST = 6.0f;
 /** Distance (in world coordinates) over which the 3D view follows most of a change in height, which on slopes comes in steps. */
 static constexpr float CAB_VIEW_3D_CLIMB_DIST = 3.0f;
 /**
- * Shortest time between two pictures of the 3D view: a bit less than two frames of a 60 Hz screen,
- * so the view is drawn evenly on every other frame.
+ * Part of the time between two redraws of the screen that making a picture of the 3D view may take.
+ * When it takes longer, the picture is made smaller, and when even that is not enough, the view is drawn
+ * only on every second (third...) redraw, so the pace stays even and the game and the rest of the interface
+ * keep enough time.
  */
-static constexpr std::chrono::milliseconds CAB_VIEW_3D_FRAME_TIME{25};
+static constexpr float CAB_VIEW_3D_FRAME_BUDGET = 0.65f;
+/** Redraws of the screen per picture of the 3D view at most. */
+static constexpr int CAB_VIEW_3D_MAX_FRAME_DIVIDER = 4;
+/** How long drawing has to be too slow or fast enough before the pace of the 3D view changes, so it does not keep changing. */
+static constexpr std::chrono::milliseconds CAB_VIEW_3D_PACE_DELAY{1500};
+/**
+ * How far (in game ticks) the moment the 3D view shows stays behind the game when a game tick happens.
+ * Game ticks come late when drawing takes long, so the view needs some ticks to move smoothly between.
+ */
+static constexpr float CAB_VIEW_3D_LAG = 1.5f;
 /** Time after which the 3D view is redrawn even when the camera did not move. */
 static constexpr std::chrono::milliseconds CAB_VIEW_3D_IDLE_FRAME_TIME{1000};
 /** Background of the dashboard. */
@@ -128,9 +140,16 @@ private:
 	uint32_t tick_count = 0; ///< Number of game ticks this window placed the camera at.
 	double view_tick = 0; ///< The moment the 3D view shows, in game ticks; runs evenly a bit behind the game.
 	float tick_interval = MILLISECONDS_PER_TICK; ///< Average time (in milliseconds) between game ticks.
+	float view_lag = CAB_VIEW_3D_LAG; ///< Average of how far (in game ticks) #view_tick is behind when a game tick happens.
 	std::chrono::steady_clock::time_point tick_time; ///< When the last game tick happened.
 	std::chrono::steady_clock::time_point clock_time; ///< When #view_tick was last advanced.
 	std::chrono::steady_clock::time_point frame_time; ///< When the 3D view was last redrawn.
+	std::chrono::steady_clock::time_point redraw_time; ///< When the screen was last redrawn, see #OnRealtimeTick.
+	float redraw_interval = 1000.0f / 60; ///< Average time (in milliseconds) between redraws of the screen.
+	int frame_divider = 1; ///< Redraws of the screen per picture of the 3D view.
+	float frame_budget = 0; ///< Time (in milliseconds) making a picture of the 3D view may take.
+	int redraws_since_frame = 0; ///< Redraws of the screen since the last picture of the 3D view.
+	std::chrono::steady_clock::time_point pace_time; ///< When #frame_divider was last right for how long drawing takes.
 	CabViewCamera drawn_camera; ///< Camera of the last picture of the 3D view.
 	uint32_t frame_id = 0; ///< Number of the last picture of the 3D view.
 
@@ -198,40 +217,54 @@ private:
 		if (jump) {
 			this->tick_cameras.clear();
 		} else {
-			/* Ticks often come in pairs when drawing took long, so only the average counts. Skip pauses. */
+			/* Ticks often come late or in pairs when drawing took long, so only the long-term average counts. Skip pauses. */
 			float ms = std::chrono::duration<float, std::milli>(now - this->tick_time).count();
-			if (ms < 4 * MILLISECONDS_PER_TICK) this->tick_interval += (ms - this->tick_interval) * 0.1f;
+			if (ms < 4 * MILLISECONDS_PER_TICK) this->tick_interval += (ms - this->tick_interval) * 0.02f;
 		}
 		this->tick_time = now;
 		this->tick_count++;
 		this->tick_cameras.push_back({this->tick_count, camera});
 		if (this->tick_cameras.size() > 8) this->tick_cameras.pop_front();
 		if (jump) {
-			this->view_tick = this->tick_count;
+			this->view_tick = static_cast<double>(this->tick_count) - CAB_VIEW_3D_LAG;
+			this->view_lag = CAB_VIEW_3D_LAG;
 			this->clock_time = now;
+		} else {
+			/* How far behind the view is now; see Advance3DClock for what is done with it. */
+			double view_now = this->view_tick + std::chrono::duration<double, std::milli>(now - this->clock_time).count() / this->tick_interval * this->Get3DClockRate();
+			this->view_lag += (static_cast<float>(this->tick_count - view_now) - this->view_lag) * 0.05f;
 		}
 	}
 
 	/**
-	 * Let the moment the 3D view shows run on evenly, one game tick behind the game.
-	 * Game ticks and redraws of the screen come at different rates and ticks often come in pairs,
-	 * so following the ticks directly would make the view jerk.
+	 * Get how fast the moment the 3D view shows runs compared to the game: a bit faster when it got behind
+	 * more than intended, a bit slower when it got too close to the game.
+	 * @return The factor for the speed of the game.
+	 */
+	float Get3DClockRate() const
+	{
+		return 1.0f + std::clamp((this->view_lag - CAB_VIEW_3D_LAG) * 0.05f, -0.1f, 0.1f);
+	}
+
+	/**
+	 * Let the moment the 3D view shows run on evenly, a bit behind the game.
+	 * Game ticks and redraws of the screen come at different rates and ticks often come late or in pairs,
+	 * so following the ticks directly would make the view jerk. Instead the view runs with the clock,
+	 * and only its speed is adjusted, slightly, so it stays the intended distance behind the game.
 	 */
 	void Advance3DClock()
 	{
 		auto now = std::chrono::steady_clock::now();
-		float ms = std::chrono::duration<float, std::milli>(now - this->clock_time).count();
+		double ms = std::chrono::duration<double, std::milli>(now - this->clock_time).count();
 		this->clock_time = now;
 
-		this->view_tick += ms / std::max(this->tick_interval, 1.0f);
-		/* Slowly correct for the game running faster or slower; catch up at once when far off. */
-		double behind = (this->tick_count - 1.0) - this->view_tick;
-		if (std::abs(behind) > 3) {
-			this->view_tick += behind;
-		} else {
-			this->view_tick += behind * 0.05;
-		}
+		this->view_tick += ms / std::max(this->tick_interval, 1.0f) * this->Get3DClockRate();
+		/* Never run ahead of the game; catch up at once when far behind, e.g. after the game was very busy. */
 		this->view_tick = std::min<double>(this->view_tick, this->tick_count);
+		if (this->tick_count - this->view_tick > 4 * CAB_VIEW_3D_LAG) {
+			this->view_tick = static_cast<double>(this->tick_count) - CAB_VIEW_3D_LAG;
+			this->view_lag = CAB_VIEW_3D_LAG;
+		}
 	}
 
 	/**
@@ -571,7 +604,7 @@ public:
 	void DrawWidget(const Rect &r, WidgetID widget) const override
 	{
 		if (widget == WID_CV_3D_VIEW) {
-			DrawCabView3D(r, this->drawn_camera, this->frame_id);
+			DrawCabView3D(r, this->drawn_camera, this->frame_id, this->frame_budget);
 			return;
 		}
 		if (widget != WID_CV_DASHBOARD) return;
@@ -671,17 +704,45 @@ public:
 		this->ApplyOffset();
 
 		if (this->Is3D()) {
-			/* Redraw the 3D view when the camera moved, but not more often than needed for smooth motion.
-			 * The time is measured here, as delta_ms is rounded down and would make the pace uneven. */
+			/* The time is measured here, as delta_ms is rounded down and would make the pace uneven. */
 			this->Advance3DClock();
 			auto now = std::chrono::steady_clock::now();
-			auto since = now - this->frame_time;
+			float ms = std::chrono::duration<float, std::milli>(now - this->redraw_time).count();
+			this->redraw_time = now;
+			if (ms < 100) this->redraw_interval += (ms - this->redraw_interval) * 0.05f;
+
+			/* Draw the 3D view on every redraw of the screen when it can be done quickly enough, as fewer
+			 * pictures than the screen shows look jerky; if needed, the picture is made smaller for that.
+			 * Otherwise draw it on every second (third...) redraw, evenly.
+			 * Slow drawing delays the redraws, so the measured time between them is only trusted when it is shorter than intended. */
+			float interval = std::min(this->redraw_interval, 1000.0f / std::max<int>(_settings_client.gui.refresh_rate, 1));
+			float budget = interval * CAB_VIEW_3D_FRAME_BUDGET;
+			float cost = GetCabView3DFrameTime(CAB_VIEW_3D_MIN_SCALE);
+			int divider = this->frame_divider;
+			if (cost > budget * divider) {
+				divider = std::min(divider + 1, CAB_VIEW_3D_MAX_FRAME_DIVIDER);
+			} else if (cost < budget * (divider - 1) * 0.75f) {
+				divider--;
+			}
+			if (divider == this->frame_divider) {
+				this->pace_time = now;
+			} else if (now - this->pace_time >= CAB_VIEW_3D_PACE_DELAY) {
+				Debug(misc, 3, "[CabView3D] picture on every {}. redraw: drawing takes at least {:.1f} ms, redraws every {:.1f} ms", divider, cost, interval);
+				this->frame_divider = divider;
+				this->pace_time = now;
+			}
+			this->frame_budget = budget * this->frame_divider;
+
+			/* Redraw the 3D view when the camera moved; when standing still, still now and then, as the world around may change. */
+			this->redraws_since_frame++;
 			CabViewCamera camera = this->Get3DCamera();
-			/* When standing still, still draw now and then, as the world around may change. */
-			if ((since >= CAB_VIEW_3D_FRAME_TIME && camera != this->drawn_camera) || since >= CAB_VIEW_3D_IDLE_FRAME_TIME) {
+			if ((this->redraws_since_frame >= this->frame_divider && camera != this->drawn_camera) || now - this->frame_time >= CAB_VIEW_3D_IDLE_FRAME_TIME) {
 				this->frame_time = now;
+				this->redraws_since_frame = 0;
 				this->drawn_camera = camera;
 				this->frame_id++;
+				Debug(misc, 4, "[CabView3D] picture at {:.3f} ms: camera {:.3f},{:.3f}, game tick {:.3f} of {}",
+					std::chrono::duration<double, std::milli>(now.time_since_epoch()).count(), camera.x, camera.y, this->view_tick, this->tick_count);
 				this->SetWidgetDirty(WID_CV_3D_VIEW);
 			}
 		}

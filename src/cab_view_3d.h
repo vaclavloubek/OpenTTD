@@ -12,6 +12,9 @@
 
 #include "core/geometry_type.hpp"
 
+/** Smallest size of the picture of the 3D view compared to the view, when drawing at full size takes too long. */
+constexpr float CAB_VIEW_3D_MIN_SCALE = 0.5f;
+
 /** Where the camera of the 3D cab view is and where it looks. */
 struct CabViewCamera {
 	float x = 0; ///< X position of the eye, in world coordinates.
@@ -23,7 +26,8 @@ struct CabViewCamera {
 	bool operator==(const CabViewCamera &) const = default;
 };
 
-void DrawCabView3D(const Rect &r, const CabViewCamera &camera, uint32_t frame_id);
+void DrawCabView3D(const Rect &r, const CabViewCamera &camera, uint32_t frame_id, float budget_ms);
+float GetCabView3DFrameTime(float scale);
 void ResetCabView3D();
 
 #endif /* CAB_VIEW_3D_H */

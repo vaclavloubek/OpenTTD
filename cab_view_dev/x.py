@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiny X11 driver for the test display: click, key, move."""
+"""Tiny X11 driver for the test display: click, drag, key, move."""
 import sys, time
 sys.path.insert(0, '/home/claude/deps/py/python-xlib')
 from Xlib import X, XK, display
@@ -15,6 +15,13 @@ def click(x, y, button=1, double=False):
     for _ in range(2 if double else 1):
         xtest.fake_input(d, X.ButtonPress, button); d.sync(); time.sleep(0.05)
         xtest.fake_input(d, X.ButtonRelease, button); d.sync(); time.sleep(0.08)
+
+def drag(x0, y0, x1, y1, steps=10):
+    move(x0, y0)
+    xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.1)
+    for i in range(1, steps + 1):
+        move(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps)
+    xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.1)
 
 def key(name, mods=()):
     codes = [d.keysym_to_keycode(XK.string_to_keysym(m)) for m in mods]
@@ -44,5 +51,6 @@ if __name__ == '__main__':
         n = int(sys.argv[4]); b = 4 if n > 0 else 5
         for _ in range(abs(n)): click(int(sys.argv[2]), int(sys.argv[3]), button=b)
     elif cmd == 'move': move(int(sys.argv[2]), int(sys.argv[3]))
+    elif cmd == 'drag': drag(*(int(a) for a in sys.argv[2:6]))
     elif cmd == 'key': key(sys.argv[2], tuple(sys.argv[3:]))
     elif cmd == 'type': type_text(sys.argv[2])
