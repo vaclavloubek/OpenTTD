@@ -6,9 +6,28 @@ barvy jen z 256barevné palety OpenTTD). Nejsou to tedy malby „jak by to mohlo
 co hra opravdu dokáže nakreslit.
 
 Jsou dvě varianty vzhledu. Václav u první (plné barvy, kvádry) řekl, že funkčně je dobrá, ale chybí jí
-kouzlo TTD. Proto vznikla **varianta B s grafikou ze hry**, kterou teď doporučuji.
+kouzlo TTD. Proto vznikla **varianta B s grafikou ze hry**. U ní mu vadily velké pixely a domy jako kulisy
+„stupňovitě nad sebou“. Z toho vznikla **varianta C**: opravdové 3D tvary oblečené do grafiky
+ze hry, kreslené jemně. Tu teď doporučuji.
 
-## Varianta B – grafika ze hry (doporučená)
+## Varianta C – 3D tvary s grafikou ze hry (doporučená)
+
+![Varianta C](3d_mockup/ttd3d_kabina.png)
+
+- **Plné rozlišení obrazovky** (na Retině 2×) a plynulé (bilineární) vzorkování textur, takže
+  žádné velké pixely. Zblízka přidává jemný vzor (1/4 jednotky) na zemi, aby nebyla rozmazaná.
+  Barvy se nakonec stejně přichytí k paletě, přechody s jemným ditheringem.
+- **Domy a nádražní budovy jsou kvádry ve 3D.** Fasády a střechy se vyříznou přímo ze spritu domu:
+  bod budovy (x, y, z) leží ve spritu na pixelu (c₀ + 2(y − x), r₀ + (x + y) − z), což je přesně
+  projekce hry (`RemapCoords`). Každá zeď tak dostane fasádu, kterou hra kreslí. Domy se šikmou
+  střechou dostanou valbovou střechu, na kterou padnou namalované tašky ze spritu.
+- **Vlaky jsou také kvádry** podél koleje, s boky, čelem a střechou ze spritu vozidla.
+- **Stromy** zůstávají jako vystřižené obrázky (jako v každé 3D hře), ale plynule zmenšené.
+- Kód ve hře je stejný jako u B (vlastní buffer, načtení spritů přes `SpriteLoaderGrf`), jen se
+  kreslí v plném rozlišení (~790 000 pixelů na Retině) a zdi domů přibydou jako další trojúhelníky.
+  Rychlost změřím v kroku 3; když by to bylo pomalé, pojede 3D pohled v polovičním rozlišení s vyhlazeným zvětšením.
+
+## Varianta B – grafika ze hry, kulisy a velké pixely
 
 ![Varianta B](3d_mockup/ttd_kabina.png)
 
@@ -119,7 +138,7 @@ mosty a tunely; doladit plynulost na Retině.
 
 ## Otázky k rozhodnutí
 
-1. **Vzhled**: varianta B s grafikou ze hry (doporučuji), nebo A s plnými barvami.
+1. **Vzhled**: varianta C (doporučuji), B, nebo A.
 2. **Výška pohledu**: navrhuji střechu vlaku (jako na obrázcích). Nižší (oči strojvedoucího) je realističtější,
    ale vidí se mnohem méně z trati před vlakem.
 3. **Kde přepínač**: tlačítko „3D“ vedle „Výhled vpřed“ (jako na obrázcích).
@@ -129,8 +148,9 @@ mosty a tunely; doladit plynulost na Retině.
 ```
 python3 cab_view_dev/3d_mockup/mockup.py src/table/palettes.h <snímek okna Kabina ve 2×> <výstupní složka>
 python3 cab_view_dev/3d_mockup/mockup_ttd.py <zdroják OpenGFX> <snímek okna Kabina ve 2×> <výstupní složka>
+python3 cab_view_dev/3d_mockup/mockup_ttd3d.py <zdroják OpenGFX> <snímek okna Kabina ve 2×> <výstupní složka>
 ```
 
-Potřebuje Python 3 s `numpy` a `Pillow`. Varianta B čte grafiku přímo ze zdrojáků OpenGFX
+Potřebuje Python 3 s `numpy` a `Pillow`. Varianty B a C čtou grafiku přímo ze zdrojáků OpenGFX
 (`git clone https://github.com/OpenTTD/OpenGFX`, tag 8.0; `ogfx.py` umí číst jejich `.pnml` a `.png`). Svět je smyšlený (dvoukolejka s obloukem, městečko,
 nádraží, kopce), z mapy hry se nic nečte.
