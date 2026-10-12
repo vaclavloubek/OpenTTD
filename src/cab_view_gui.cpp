@@ -25,6 +25,7 @@
 #include "gfx_func.h"
 #include "settings_type.h"
 #include "core/geometry_func.hpp"
+#include "cab_view_3d.h"
 
 #include "widgets/cab_view_widget.h"
 
@@ -35,6 +36,8 @@
 
 /** Whether cab views look ahead in the direction of travel. Shared by all cab views. */
 static bool _cab_view_look_ahead = true;
+/** Whether cab views of trains show the 3D view instead of the map. Shared by all cab views. */
+static bool _cab_view_3d = false;
 
 /** Time constant (in milliseconds) of the camera easing towards its look-ahead position. */
 static constexpr float CAB_VIEW_EASE_MS = 650.0f;
@@ -56,6 +59,14 @@ static constexpr float CAB_VIEW_DIAL_SWEEP = 270.0f;
 static constexpr int CAB_VIEW_DIAL_TICKS = 10;
 /** Position of the maximum speed of the vehicle on the speedometer dial; beyond it is the red zone. */
 static constexpr float CAB_VIEW_DIAL_MAX_SPEED = 0.85f;
+/** Height of the eye of the 3D view above the rails: the roof of the train. */
+static constexpr float CAB_VIEW_3D_EYE = 8.0f;
+/** Distance (in world coordinates) over which the 3D view turns most of the way into a new direction of travel. */
+static constexpr float CAB_VIEW_3D_TURN_DIST = 6.0f;
+/** Shortest time (in milliseconds) between two pictures of the 3D view. */
+static constexpr uint CAB_VIEW_3D_FRAME_MS = 33;
+/** Time (in milliseconds) after which the 3D view is redrawn even when the camera did not move. */
+static constexpr uint CAB_VIEW_3D_IDLE_FRAME_MS = 1000;
 /** Background of the dashboard. */
 static constexpr PixelColour CAB_VIEW_DASHBOARD_COLOUR = GREY_SCALE(1);
 /** Face of the speedometer dial. */
@@ -71,7 +82,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_cab_view_widgets = {
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_GREY),
 		NWidget(WWT_INSET, COLOUR_GREY), SetPadding(2, 2, 2, 2),
-			NWidget(NWID_VIEWPORT, INVALID_COLOUR, WID_CV_VIEWPORT), SetMinimalSize(320, 180), SetResize(1, 1), SetFill(1, 1),
+			NWidget(NWID_SELECTION, INVALID_COLOUR, WID_CV_VIEW_SELECT),
+				NWidget(NWID_VIEWPORT, INVALID_COLOUR, WID_CV_VIEWPORT), SetMinimalSize(320, 180), SetResize(1, 1), SetFill(1, 1),
+				NWidget(WWT_EMPTY, INVALID_COLOUR, WID_CV_3D_VIEW), SetMinimalSize(320, 180), SetResize(1, 1), SetFill(1, 1),
+			EndContainer(),
 		EndContainer(),
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_GREY, WID_CV_DASHBOARD), SetResize(1, 0), SetFill(1, 0), EndContainer(),
@@ -79,6 +93,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_cab_view_widgets = {
 		NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_CV_ZOOM_IN), SetSpriteTip(SPR_IMG_ZOOMIN, STR_TOOLBAR_TOOLTIP_ZOOM_THE_VIEW_IN),
 		NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_CV_ZOOM_OUT), SetSpriteTip(SPR_IMG_ZOOMOUT, STR_TOOLBAR_TOOLTIP_ZOOM_THE_VIEW_OUT),
 		NWidget(WWT_TEXTBTN, COLOUR_GREY, WID_CV_LOOK_AHEAD), SetFill(0, 1), SetStringTip(STR_CAB_VIEW_LOOK_AHEAD, STR_CAB_VIEW_LOOK_AHEAD_TOOLTIP),
+		NWidget(WWT_TEXTBTN, COLOUR_GREY, WID_CV_3D), SetMinimalSize(30, 0), SetFill(0, 1), SetStringTip(STR_CAB_VIEW_3D, STR_CAB_VIEW_3D_TOOLTIP),
 		NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_CV_START_STOP), SetFill(1, 1), SetResize(1, 0), SetStringTip(STR_CAB_VIEW_STOP, STR_CAB_VIEW_START_STOP_TOOLTIP),
 		NWidget(WWT_RESIZEBOX, COLOUR_GREY),
 	EndContainer(),
@@ -92,6 +107,63 @@ private:
 	uint dashboard_timer = 0; ///< Milliseconds since the dashboard was last redrawn.
 	int speed_width = 0; ///< Width of the speed part of the dashboard, dial included.
 	int load_width = 0; ///< Width of the load part of the dashboard.
+	float yaw = 0; ///< Direction of view of the 3D view, eased towards the direction of travel.
+	bool yaw_valid = false; ///< Whether #yaw has been set.
+	int32_t yaw_x = 0; ///< X position of the train when #yaw was last updated.
+	int32_t yaw_y = 0; ///< Y position of the train when #yaw was last updated.
+	uint frame_timer = 0; ///< Milliseconds since the 3D view was last redrawn.
+	CabViewCamera drawn_camera; ///< Camera of the last picture of the 3D view.
+	uint32_t frame_id = 0; ///< Number of the last picture of the 3D view.
+
+	/** Whether this window shows the 3D view. */
+	bool Is3D() const
+	{
+		return _cab_view_3d && Vehicle::Get(this->window_number)->type == VEH_TRAIN;
+	}
+
+	/**
+	 * Get the camera of the 3D view: on the roof of the front of the train.
+	 * @param v The train.
+	 * @return The camera.
+	 */
+	CabViewCamera Get3DCamera(const Vehicle *v) const
+	{
+		CabViewCamera camera;
+		/* Nothing to see from a depot or tunnel. */
+		camera.dark = v->vehstatus.Test(VehState::Hidden);
+		camera.yaw = this->yaw;
+		/* The position of a vehicle is its middle; move the camera to the front. */
+		float half_length = Train::From(v)->gcache.cached_veh_length / 2.0f;
+		camera.x = v->x_pos + std::cos(this->yaw) * half_length;
+		camera.y = v->y_pos + std::sin(this->yaw) * half_length;
+		camera.z = v->z_pos + CAB_VIEW_3D_EYE;
+		return camera;
+	}
+
+	/**
+	 * Ease the direction of the 3D view towards the direction of travel.
+	 * The view turns with the distance travelled instead of with time, so it follows
+	 * the track through curves at any speed.
+	 * @param v The train.
+	 * @param jump Turn into the direction of travel at once.
+	 */
+	void Update3DYaw(const Vehicle *v, bool jump)
+	{
+		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
+		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
+		float turn = std::remainder(target - this->yaw, 2.0f * static_cast<float>(M_PI));
+		float moved = std::hypot(static_cast<float>(v->x_pos - this->yaw_x), static_cast<float>(v->y_pos - this->yaw_y));
+		this->yaw_x = v->x_pos;
+		this->yaw_y = v->y_pos;
+		/* Jump when starting, when the train reverses, or when it moved too far to follow. */
+		if (!this->yaw_valid || jump || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE) {
+			this->yaw = target;
+			this->yaw_valid = true;
+			return;
+		}
+		float alpha = 1.0f - std::exp(-moved / CAB_VIEW_3D_TURN_DIST);
+		this->yaw += turn * alpha;
+	}
 
 	/**
 	 * Find the point ahead along the track of a train where the camera should look.
@@ -350,6 +422,7 @@ public:
 		this->offset_y = target.y;
 		this->ApplyOffset();
 
+		if (v->type == VEH_TRAIN) this->Update3DYaw(v, true);
 		this->OnInvalidateData();
 	}
 
@@ -406,6 +479,10 @@ public:
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
 	{
+		if (widget == WID_CV_3D_VIEW) {
+			DrawCabView3D(r, this->drawn_camera, this->frame_id);
+			return;
+		}
 		if (widget != WID_CV_DASHBOARD) return;
 
 		const Vehicle *v = Vehicle::Get(this->window_number);
@@ -472,6 +549,13 @@ public:
 				InvalidateWindowClassesData(WC_VEHICLE_CAB_VIEW);
 				break;
 
+			case WID_CV_3D:
+				_cab_view_3d = !_cab_view_3d;
+				/* Start with fresh graphics, in case they changed since the last time. */
+				if (_cab_view_3d) ResetCabView3D();
+				InvalidateWindowClassesData(WC_VEHICLE_CAB_VIEW);
+				break;
+
 			case WID_CV_START_STOP:
 				StartStopVehicle(Vehicle::Get(this->window_number), true);
 				break;
@@ -490,6 +574,20 @@ public:
 		this->offset_y += (target.y - this->offset_y) * alpha;
 		this->ApplyOffset();
 
+		if (this->Is3D()) {
+			/* Redraw the 3D view when the camera moved, but not more often than needed for smooth motion. */
+			this->Update3DYaw(v, false);
+			this->frame_timer += delta_ms;
+			CabViewCamera camera = this->Get3DCamera(v);
+			/* When standing still, still draw now and then, as the world around may change. */
+			if ((this->frame_timer >= CAB_VIEW_3D_FRAME_MS && camera != this->drawn_camera) || this->frame_timer >= CAB_VIEW_3D_IDLE_FRAME_MS) {
+				this->frame_timer = 0;
+				this->drawn_camera = camera;
+				this->frame_id++;
+				this->SetWidgetDirty(WID_CV_3D_VIEW);
+			}
+		}
+
 		this->dashboard_timer += delta_ms;
 		if (this->dashboard_timer >= CAB_VIEW_DASHBOARD_REFRESH_MS) {
 			this->dashboard_timer = 0;
@@ -500,7 +598,7 @@ public:
 
 	void OnMouseWheel(int wheel, WidgetID widget) override
 	{
-		if (widget != WID_CV_VIEWPORT) return;
+		if (widget != WID_CV_VIEWPORT || this->Is3D()) return;
 		if (_settings_client.gui.scrollwheel_scrolling != SWS_OFF) {
 			DoZoomInOutWindow(wheel < 0 ? ZOOM_IN : ZOOM_OUT, this);
 		}
@@ -523,8 +621,27 @@ public:
 	{
 		if (data == VIWD_AUTOREPLACE || !gui_scope) return;
 
+		const Vehicle *v = Vehicle::Get(this->window_number);
+		bool is_3d = this->Is3D();
 		this->SetWidgetLoweredState(WID_CV_LOOK_AHEAD, _cab_view_look_ahead);
+		this->SetWidgetLoweredState(WID_CV_3D, is_3d);
+		this->SetWidgetDisabledState(WID_CV_3D, v->type != VEH_TRAIN);
+
+		NWidgetStacked *selection = this->GetWidget<NWidgetStacked>(WID_CV_VIEW_SELECT);
+		if (selection->shown_plane != (is_3d ? 1 : 0)) {
+			selection->SetDisplayedPlane(is_3d ? 1 : 0);
+			this->ReInit();
+			this->OnResize();
+			if (is_3d) {
+				this->Update3DYaw(v, true);
+				this->drawn_camera = this->Get3DCamera(v);
+			}
+		}
+
 		if (this->viewport != nullptr) HandleZoomMessage(this, *this->viewport, WID_CV_ZOOM_IN, WID_CV_ZOOM_OUT);
+		/* Zoom and look-ahead are for the map view only. */
+		if (is_3d) this->SetWidgetsDisabledState(true, WID_CV_ZOOM_IN, WID_CV_ZOOM_OUT);
+		this->SetWidgetDisabledState(WID_CV_LOOK_AHEAD, is_3d);
 		this->SetDirty();
 	}
 };

@@ -71,6 +71,16 @@ void SetTileSelectBigSize(int ox, int oy, int sx, int sy);
 
 void ViewportDoDraw(const Viewport &vp, int left, int top, int right, int bottom);
 
+/** A ground sprite of a tile, see CollectTileGroundSprites. */
+struct GroundSpriteToDraw {
+	SpriteID image; ///< The sprite.
+	PaletteID pal; ///< Its palette.
+	int32_t x; ///< Screen X coordinate (virtual viewport coordinates) where it would be drawn.
+	int32_t y; ///< Screen Y coordinate (virtual viewport coordinates) where it would be drawn.
+};
+
+void CollectTileGroundSprites(TileIndex tile, std::vector<GroundSpriteToDraw> &sprites);
+
 bool ScrollWindowToTile(TileIndex tile, Window *w, bool instant = false);
 bool ScrollWindowTo(int x, int y, int z, Window *w, bool instant = false);
 

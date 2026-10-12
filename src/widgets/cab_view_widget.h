@@ -14,10 +14,13 @@
 enum CabViewWidgets : WidgetID {
 	WID_CV_CAPTION,    ///< Caption of window.
 	WID_CV_VIEWPORT,   ///< The viewport riding along with the vehicle.
+	WID_CV_VIEW_SELECT, ///< Selection between the viewport and the 3D view.
+	WID_CV_3D_VIEW,    ///< The 3D view from the cab.
 	WID_CV_DASHBOARD,  ///< Dashboard with speed, destination, state and load.
 	WID_CV_ZOOM_IN,    ///< Zoom in.
 	WID_CV_ZOOM_OUT,   ///< Zoom out.
 	WID_CV_LOOK_AHEAD, ///< Toggle looking ahead in the direction of travel.
+	WID_CV_3D,         ///< Toggle the 3D view.
 	WID_CV_START_STOP, ///< Start or stop the vehicle.
 };
 
