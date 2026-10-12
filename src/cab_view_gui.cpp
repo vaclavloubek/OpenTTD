@@ -27,6 +27,9 @@
 #include "core/geometry_func.hpp"
 #include "cab_view_3d.h"
 
+#include <chrono>
+#include <deque>
+
 #include "widgets/cab_view_widget.h"
 
 #include "table/strings.h"
@@ -63,10 +66,15 @@ static constexpr float CAB_VIEW_DIAL_MAX_SPEED = 0.85f;
 static constexpr float CAB_VIEW_3D_EYE = 8.0f;
 /** Distance (in world coordinates) over which the 3D view turns most of the way into a new direction of travel. */
 static constexpr float CAB_VIEW_3D_TURN_DIST = 6.0f;
-/** Shortest time (in milliseconds) between two pictures of the 3D view. */
-static constexpr uint CAB_VIEW_3D_FRAME_MS = 33;
-/** Time (in milliseconds) after which the 3D view is redrawn even when the camera did not move. */
-static constexpr uint CAB_VIEW_3D_IDLE_FRAME_MS = 1000;
+/** Distance (in world coordinates) over which the 3D view follows most of a change in height, which on slopes comes in steps. */
+static constexpr float CAB_VIEW_3D_CLIMB_DIST = 3.0f;
+/**
+ * Shortest time between two pictures of the 3D view: a bit less than two frames of a 60 Hz screen,
+ * so the view is drawn evenly on every other frame.
+ */
+static constexpr std::chrono::milliseconds CAB_VIEW_3D_FRAME_TIME{25};
+/** Time after which the 3D view is redrawn even when the camera did not move. */
+static constexpr std::chrono::milliseconds CAB_VIEW_3D_IDLE_FRAME_TIME{1000};
 /** Background of the dashboard. */
 static constexpr PixelColour CAB_VIEW_DASHBOARD_COLOUR = GREY_SCALE(1);
 /** Face of the speedometer dial. */
@@ -108,10 +116,21 @@ private:
 	int speed_width = 0; ///< Width of the speed part of the dashboard, dial included.
 	int load_width = 0; ///< Width of the load part of the dashboard.
 	float yaw = 0; ///< Direction of view of the 3D view, eased towards the direction of travel.
-	bool yaw_valid = false; ///< Whether #yaw has been set.
-	int32_t yaw_x = 0; ///< X position of the train when #yaw was last updated.
-	int32_t yaw_y = 0; ///< Y position of the train when #yaw was last updated.
-	uint frame_timer = 0; ///< Milliseconds since the 3D view was last redrawn.
+	float height = 0; ///< Height of the train for the 3D view, eased so steps on slopes don't make it jump.
+	float train_x = 0; ///< X position of the front of the train at the last game tick, see #GetExactPosition.
+	float train_y = 0; ///< Y position of the front of the train at the last game tick, see #GetExactPosition.
+	/** Camera of the 3D view at a game tick. */
+	struct TickCamera {
+		uint32_t tick; ///< Number of the game tick, counted by this window.
+		CabViewCamera camera; ///< The camera at that tick.
+	};
+	std::deque<TickCamera> tick_cameras; ///< Cameras of the last few game ticks, oldest first.
+	uint32_t tick_count = 0; ///< Number of game ticks this window placed the camera at.
+	double view_tick = 0; ///< The moment the 3D view shows, in game ticks; runs evenly a bit behind the game.
+	float tick_interval = MILLISECONDS_PER_TICK; ///< Average time (in milliseconds) between game ticks.
+	std::chrono::steady_clock::time_point tick_time; ///< When the last game tick happened.
+	std::chrono::steady_clock::time_point clock_time; ///< When #view_tick was last advanced.
+	std::chrono::steady_clock::time_point frame_time; ///< When the 3D view was last redrawn.
 	CabViewCamera drawn_camera; ///< Camera of the last picture of the 3D view.
 	uint32_t frame_id = 0; ///< Number of the last picture of the 3D view.
 
@@ -122,47 +141,119 @@ private:
 	}
 
 	/**
-	 * Get the camera of the 3D view: on the roof of the front of the train.
-	 * @param v The train.
-	 * @return The camera.
+	 * Get the position of a vehicle including how far it got towards its next step.
+	 * Vehicles move in whole steps, a train at 90 km/h only every third game tick or so,
+	 * which would make the 3D view jerk forward.
+	 * @param v The vehicle.
+	 * @return X and Y position in world coordinates.
 	 */
-	CabViewCamera Get3DCamera(const Vehicle *v) const
+	static std::pair<float, float> GetExactPosition(const Vehicle *v)
 	{
-		CabViewCamera camera;
-		/* Nothing to see from a depot or tunnel. */
-		camera.dark = v->vehstatus.Test(VehState::Hidden);
-		camera.yaw = this->yaw;
-		/* The position of a vehicle is its middle; move the camera to the front. */
-		float half_length = Train::From(v)->gcache.cached_veh_length / 2.0f;
-		camera.x = v->x_pos + std::cos(this->yaw) * half_length;
-		camera.y = v->y_pos + std::sin(this->yaw) * half_length;
-		camera.z = v->z_pos + CAB_VIEW_3D_EYE;
-		return camera;
+		/* The progress collects the speed until there is enough for a step, see GroundVehicle::DoUpdateSpeed(). */
+		uint step = (v->direction & 1) ? TILE_AXIAL_DISTANCE : TILE_CORNER_DISTANCE * 2; // As Vehicle::GetAdvanceDistance().
+		float part = std::min<float>(v->progress, step) / step;
+		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
+		return {v->x_pos + diff.x * part, v->y_pos + diff.y * part};
 	}
 
 	/**
-	 * Ease the direction of the 3D view towards the direction of travel.
-	 * The view turns with the distance travelled instead of with time, so it follows
-	 * the track through curves at any speed.
-	 * @param v The train.
-	 * @param jump Turn into the direction of travel at once.
+	 * Place the camera of the 3D view for the current game tick: on the roof of the front of the train.
+	 * The direction and height ease with the distance travelled instead of with time, so
+	 * the view follows the track through curves and over slopes at any speed.
+	 * @param jump Place the camera at once, without easing or moving smoothly from where it was.
 	 */
-	void Update3DYaw(const Vehicle *v, bool jump)
+	void Update3DTick(bool jump)
 	{
+		const Vehicle *v = Vehicle::Get(this->window_number);
+		auto [x, y] = GetExactPosition(v);
+		float moved = std::hypot(x - this->train_x, y - this->train_y);
+		this->train_x = x;
+		this->train_y = y;
+
 		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
 		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
 		float turn = std::remainder(target - this->yaw, 2.0f * static_cast<float>(M_PI));
-		float moved = std::hypot(static_cast<float>(v->x_pos - this->yaw_x), static_cast<float>(v->y_pos - this->yaw_y));
-		this->yaw_x = v->x_pos;
-		this->yaw_y = v->y_pos;
+		bool dark = v->vehstatus.Test(VehState::Hidden);
 		/* Jump when starting, when the train reverses, or when it moved too far to follow. */
-		if (!this->yaw_valid || jump || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE) {
+		jump |= this->tick_cameras.empty() || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE || dark != this->tick_cameras.back().camera.dark;
+		if (jump) {
 			this->yaw = target;
-			this->yaw_valid = true;
-			return;
+			this->height = static_cast<float>(v->z_pos);
+		} else {
+			this->yaw += turn * (1.0f - std::exp(-moved / CAB_VIEW_3D_TURN_DIST));
+			this->height += (v->z_pos - this->height) * (1.0f - std::exp(-moved / CAB_VIEW_3D_CLIMB_DIST));
 		}
-		float alpha = 1.0f - std::exp(-moved / CAB_VIEW_3D_TURN_DIST);
-		this->yaw += turn * alpha;
+
+		CabViewCamera camera;
+		/* Nothing to see from a depot or tunnel. */
+		camera.dark = dark;
+		camera.yaw = this->yaw;
+		/* The position of a vehicle is its middle; move the camera to the front. */
+		float half_length = Train::From(v)->gcache.cached_veh_length / 2.0f;
+		camera.x = x + std::cos(this->yaw) * half_length;
+		camera.y = y + std::sin(this->yaw) * half_length;
+		camera.z = this->height + CAB_VIEW_3D_EYE;
+
+		auto now = std::chrono::steady_clock::now();
+		if (jump) {
+			this->tick_cameras.clear();
+		} else {
+			/* Ticks often come in pairs when drawing took long, so only the average counts. Skip pauses. */
+			float ms = std::chrono::duration<float, std::milli>(now - this->tick_time).count();
+			if (ms < 4 * MILLISECONDS_PER_TICK) this->tick_interval += (ms - this->tick_interval) * 0.1f;
+		}
+		this->tick_time = now;
+		this->tick_count++;
+		this->tick_cameras.push_back({this->tick_count, camera});
+		if (this->tick_cameras.size() > 8) this->tick_cameras.pop_front();
+		if (jump) {
+			this->view_tick = this->tick_count;
+			this->clock_time = now;
+		}
+	}
+
+	/**
+	 * Let the moment the 3D view shows run on evenly, one game tick behind the game.
+	 * Game ticks and redraws of the screen come at different rates and ticks often come in pairs,
+	 * so following the ticks directly would make the view jerk.
+	 */
+	void Advance3DClock()
+	{
+		auto now = std::chrono::steady_clock::now();
+		float ms = std::chrono::duration<float, std::milli>(now - this->clock_time).count();
+		this->clock_time = now;
+
+		this->view_tick += ms / std::max(this->tick_interval, 1.0f);
+		/* Slowly correct for the game running faster or slower; catch up at once when far off. */
+		double behind = (this->tick_count - 1.0) - this->view_tick;
+		if (std::abs(behind) > 3) {
+			this->view_tick += behind;
+		} else {
+			this->view_tick += behind * 0.05;
+		}
+		this->view_tick = std::min<double>(this->view_tick, this->tick_count);
+	}
+
+	/**
+	 * Get the camera of the 3D view at the moment it shows, between the cameras of the game ticks around it.
+	 * @return The camera.
+	 */
+	CabViewCamera Get3DCamera() const
+	{
+		if (this->tick_cameras.empty()) return {};
+		auto next = std::ranges::find_if(this->tick_cameras, [this](const TickCamera &tc) { return tc.tick > this->view_tick; });
+		if (next == this->tick_cameras.begin()) return this->tick_cameras.front().camera;
+		if (next == this->tick_cameras.end()) return this->tick_cameras.back().camera;
+
+		const CabViewCamera &from = std::prev(next)->camera;
+		const CabViewCamera &to = next->camera;
+		float f = static_cast<float>((this->view_tick - std::prev(next)->tick) / (next->tick - std::prev(next)->tick));
+		CabViewCamera camera = to;
+		camera.x = from.x + (to.x - from.x) * f;
+		camera.y = from.y + (to.y - from.y) * f;
+		camera.z = from.z + (to.z - from.z) * f;
+		camera.yaw = from.yaw + std::remainder(to.yaw - from.yaw, 2.0f * static_cast<float>(M_PI)) * f;
+		return camera;
 	}
 
 	/**
@@ -422,7 +513,7 @@ public:
 		this->offset_y = target.y;
 		this->ApplyOffset();
 
-		if (v->type == VEH_TRAIN) this->Update3DYaw(v, true);
+		if (v->type == VEH_TRAIN) this->Update3DTick(true);
 		this->OnInvalidateData();
 	}
 
@@ -562,6 +653,11 @@ public:
 		}
 	}
 
+	void OnGameTick() override
+	{
+		if (this->Is3D()) this->Update3DTick(false);
+	}
+
 	void OnRealtimeTick(uint delta_ms) override
 	{
 		if (this->viewport == nullptr) return;
@@ -575,13 +671,15 @@ public:
 		this->ApplyOffset();
 
 		if (this->Is3D()) {
-			/* Redraw the 3D view when the camera moved, but not more often than needed for smooth motion. */
-			this->Update3DYaw(v, false);
-			this->frame_timer += delta_ms;
-			CabViewCamera camera = this->Get3DCamera(v);
+			/* Redraw the 3D view when the camera moved, but not more often than needed for smooth motion.
+			 * The time is measured here, as delta_ms is rounded down and would make the pace uneven. */
+			this->Advance3DClock();
+			auto now = std::chrono::steady_clock::now();
+			auto since = now - this->frame_time;
+			CabViewCamera camera = this->Get3DCamera();
 			/* When standing still, still draw now and then, as the world around may change. */
-			if ((this->frame_timer >= CAB_VIEW_3D_FRAME_MS && camera != this->drawn_camera) || this->frame_timer >= CAB_VIEW_3D_IDLE_FRAME_MS) {
-				this->frame_timer = 0;
+			if ((since >= CAB_VIEW_3D_FRAME_TIME && camera != this->drawn_camera) || since >= CAB_VIEW_3D_IDLE_FRAME_TIME) {
+				this->frame_time = now;
 				this->drawn_camera = camera;
 				this->frame_id++;
 				this->SetWidgetDirty(WID_CV_3D_VIEW);
@@ -633,8 +731,8 @@ public:
 			this->ReInit();
 			this->OnResize();
 			if (is_3d) {
-				this->Update3DYaw(v, true);
-				this->drawn_camera = this->Get3DCamera(v);
+				this->Update3DTick(true);
+				this->drawn_camera = this->Get3DCamera();
 			}
 		}
 

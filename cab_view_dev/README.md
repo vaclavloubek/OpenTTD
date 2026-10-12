@@ -51,7 +51,12 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - Opar od 14 dlaždic, dohled 56 dlaždic, obloha s přechodem do oparu.
 - **Kamera** na čele vlaku ve výšce střechy (8 jednotek), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
   (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu a v tunelu je obraz černý.
-- Překresluje se jen při pohybu kamery, nejvýš ~30× za sekundu (když vlak stojí, jednou za sekundu).
+- **Plynulost**: vlak se ve hře posouvá po celých krocích (1/16 dlaždice), v 90 km/h jen asi každý třetí herní
+  tik, a herní tiky (27 ms) přicházejí jinak než snímky obrazovky, často po dvou. Kamera proto bere i rozjetý
+  krok (`progress`), pamatuje si posledních 8 tiků a obraz ukazuje okamžik o jeden tik pozadu, který běží
+  rovnoměrně podle hodin. Výška se na svazích vyhlazuje podle ujeté dráhy (ve hře stoupá po skocích).
+- Překresluje se jen při pohybu kamery, nejvýš ~30× za sekundu (při 60 Hz každý druhý snímek obrazovky, čas se
+  měří sám, protože `delta_ms` je zaokrouhlené dolů), když vlak stojí, jednou za sekundu.
 - **Měření**: hru spustit s `-d misc=3`, do logu se pak u každého snímku píše čas přípravy, vyplnění a výstupu.
   Linux VM se 4 jádry, okno 1268×620 px (rozhraní 2×): příprava ~4 ms, vyplnění ~15–18 ms, výstup ~3 ms.
 - Zatím chybí (krok 4): budovy, nádraží, návěstidla, stromy, vozidla, mosty a portály tunelů (vlak zatím vjede
@@ -60,10 +65,13 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 
 ## Další kroky
 
-1. Vyzkoušet u sebe na MacBooku (Retina, rozhraní 2×).
-2. Případně: výhled podél silnice i pro silniční vozidla (`CFollowTrackRoad`), další údaje na palubní desce
+1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
+   `openttd-cab-view-macos-arm64`, stáhnout ze stránky běhu na GitHubu, rozbalit, spustit). Na MacBooku Air
+   3D pohled běží v plném rozlišení Retiny.
+2. Krok 4: doplnit 3D svět – budovy, návěstidla, stromy, ostatní vozidla, mosty a portály tunelů; doladit
+   plynulost na Retině.
+3. Případně: výhled podél silnice i pro silniční vozidla (`CFollowTrackRoad`), další údaje na palubní desce
    (návěst, sklon), klávesová zkratka pro otevření kabiny.
-3. Etapa 2: jednoduchý 3D pohled.
 
 ## Testovací prostředí (cloud, Ubuntu 24.04)
 
