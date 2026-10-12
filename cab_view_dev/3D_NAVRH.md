@@ -8,9 +8,9 @@ co hra opravdu dokáže nakreslit.
 Jsou dvě varianty vzhledu. Václav u první (plné barvy, kvádry) řekl, že funkčně je dobrá, ale chybí jí
 kouzlo TTD. Proto vznikla **varianta B s grafikou ze hry**. U ní mu vadily velké pixely a domy jako kulisy
 „stupňovitě nad sebou“. Z toho vznikla **varianta C**: opravdové 3D tvary oblečené do grafiky
-ze hry, kreslené jemně. Tu teď doporučuji.
+ze hry, kreslené jemně. **Václav ji 12. 10. 2026 schválil („Jo, tohle je lepší.“).**
 
-## Varianta C – 3D tvary s grafikou ze hry (doporučená)
+## Varianta C – 3D tvary s grafikou ze hry (schválená)
 
 ![Varianta C](3d_mockup/ttd3d_kabina.png)
 
@@ -138,7 +138,7 @@ mosty a tunely; doladit plynulost na Retině.
 
 ## Otázky k rozhodnutí
 
-1. **Vzhled**: varianta C (doporučuji), B, nebo A.
+1. **Vzhled**: rozhodnuto, varianta C.
 2. **Výška pohledu**: navrhuji střechu vlaku (jako na obrázcích). Nižší (oči strojvedoucího) je realističtější,
    ale vidí se mnohem méně z trati před vlakem.
 3. **Kde přepínač**: tlačítko „3D“ vedle „Výhled vpřed“ (jako na obrázcích).
