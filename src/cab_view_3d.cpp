@@ -68,6 +68,7 @@ constexpr float RAIL_WIDTH = 0.44f; ///< Width of the head of a rail.
 constexpr float SLEEPER_LENGTH = 4.4f; ///< Length of a sleeper, across the track.
 constexpr float SLEEPER_WIDTH = 0.9f; ///< Width of a sleeper, along the track.
 constexpr float SLEEPER_SPACING = 2.0f; ///< Distance between sleepers.
+constexpr float TRACK_SMOOTH_LENGTH = 2.0f; ///< Length along straight track over which its ground is smoothed, see #SmoothAlong.
 constexpr float BOX_DIST = 24.0f * TILE; ///< Platforms and buildings are drawn up to this distance.
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
 constexpr size_t MAX_NEW_TEXTURES_TIMED = 32; ///< Pictures that make more new textures don't count for the average time of a picture.
@@ -388,7 +389,7 @@ private:
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
 
 	const RawSprite &GetRawSprite(SpriteID sprite);
-	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes);
+	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
 	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal);
 	RGB Fog(const RGB &colour, float dist) const;
 
@@ -462,6 +463,33 @@ static bool IsUnderBuilding(const SpriteLoader::CommonPixel &p)
 }
 
 /**
+ * Smooth a picture along a direction: every pixel becomes the average of the picture along a line through it.
+ * Lines along straight track are steps of pixels in the isometric sprites. Mapped onto the ground in 3D
+ * they become teeth along the edges of the ballast, which seem to shake from side to side when the train
+ * drives over them. Averaged along the track over whole steps, the edges are straight.
+ * @param pic The picture; it has no opacity.
+ * @param dx Columns the line spans.
+ * @param dy Rows the line spans.
+ * @return The smoothed picture.
+ */
+static Picture SmoothAlong(const Picture &pic, float dx, float dy)
+{
+	int samples = std::max(2, static_cast<int>(std::ceil(std::max(std::abs(dx), std::abs(dy)) * 2)));
+	Picture smooth = pic;
+	for (int y = 0; y < pic.height; y++) {
+		for (int x = 0; x < pic.width; x++) {
+			RGB sum = {0, 0, 0};
+			for (int i = 0; i < samples; i++) {
+				float t = (i + 0.5f) / samples - 0.5f;
+				sum = sum + pic.Sample(x + 0.5f + dx * t, y + 0.5f + dy * t);
+			}
+			smooth.pixels[static_cast<size_t>(y) * pic.width + x] = sum * (1.0f / samples);
+		}
+	}
+	return smooth;
+}
+
+/**
  * Finish a texture whose picture has been painted: undo the premultiplied alpha, grow the picture
  * into the transparent pixels around it, so smooth sampling at the edges does not mix in black,
  * and make the smaller versions of it.
@@ -469,8 +497,9 @@ static bool IsUnderBuilding(const SpriteLoader::CommonPixel &p)
  * @param alpha Opacity of the pixels of the picture.
  * @param passes How many pixels at most the picture grows.
  * @param keep_alpha Whether to keep the opacity, for leaving out the transparent pixels when drawing.
+ * @param smooth How far to smooth the picture, in pixels, see #SmoothAlong; nothing when zero.
  */
-static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int passes, bool keep_alpha)
+static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int passes, bool keep_alpha, std::pair<float, float> smooth = {0, 0})
 {
 	Picture &pic = tex.levels[0];
 	if (keep_alpha) {
@@ -532,6 +561,7 @@ static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int pass
 	for (size_t i = 0; i < pic.pixels.size(); i++) {
 		if (alpha[i] <= 0) pic.pixels[i] = mean;
 	}
+	if (smooth.first != 0 || smooth.second != 0) pic = SmoothAlong(pic, smooth.first, smooth.second);
 
 	for (int level = 1; level < TEXTURE_LEVELS; level++) tex.levels[level] = tex.levels[level - 1].Halve();
 }
@@ -585,9 +615,10 @@ static bool HasBoxes(TileIndex tile)
  * @param tile The tile.
  * @param tile_z Height of the tile as the viewport uses it, see #GetTilePixelSlope.
  * @param boxes Whether to also collect the sprites standing in boxes on the tile, into #box_sprites.
+ * @param smooth How far to smooth the texture, in pixels, see #SmoothAlong.
  * @return The texture.
  */
-const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool boxes)
+const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth)
 {
 	this->ground_sprites.clear();
 	this->box_sprites.clear();
@@ -603,6 +634,11 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 		this->key.push_back(FloorDiv(gs.x - origin.x, ZOOM_BASE));
 		this->key.push_back(FloorDiv(gs.y - origin.y, ZOOM_BASE));
 	}
+	size_t sprite_keys = this->key.size();
+	if (sprite_keys != 0 && (smooth.first != 0 || smooth.second != 0)) {
+		this->key.push_back(static_cast<int32_t>(std::lround(smooth.first * 64)));
+		this->key.push_back(static_cast<int32_t>(std::lround(smooth.second * 64)));
+	}
 
 	auto it = this->textures.find(this->key);
 	if (it != this->textures.end()) return it->second;
@@ -611,7 +647,7 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 
 	/* Bounding box of all sprites. */
 	int left = INT_MAX, top = INT_MAX, right = INT_MIN, bottom = INT_MIN;
-	for (size_t i = 0; i < this->key.size(); i += 4) {
+	for (size_t i = 0; i < sprite_keys; i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
 		if (raw.pixels.empty()) continue;
 		left = std::min(left, this->key[i + 2] + raw.x_offs);
@@ -634,12 +670,12 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 	bool building = IsTileType(tile, MP_HOUSE) || IsTileType(tile, MP_INDUSTRY) || IsTileType(tile, MP_OBJECT);
 
 	/* Put the sprites on top of each other, like the viewport draws them. */
-	for (size_t i = 0; i < this->key.size(); i += 4) {
+	for (size_t i = 0; i < sprite_keys; i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
 		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top, building);
 	}
 
-	FinishTexture(tex, std::move(alpha), building ? MAX_FILL_PASSES : 4, false);
+	FinishTexture(tex, std::move(alpha), building ? MAX_FILL_PASSES : 4, false, smooth);
 	return tex;
 }
 
@@ -898,6 +934,21 @@ static float SurfaceZ(const std::array<float, CORNER_END> &z, bool split_we, flo
 }
 
 /**
+ * Get the rail track on a tile.
+ * @param tile The tile.
+ * @return The track pieces.
+ */
+static TrackBits GetTileRailTracks(TileIndex tile)
+{
+	switch (GetTileType(tile)) {
+		case MP_RAILWAY: return IsPlainRail(tile) ? GetTrackBits(tile) : TRACK_BIT_NONE;
+		case MP_STATION: return HasStationRail(tile) ? GetRailStationTrackBits(tile) : TRACK_BIT_NONE;
+		case MP_ROAD: return IsLevelCrossing(tile) ? GetCrossingRailBits(tile) : TRACK_BIT_NONE;
+		default: return TRACK_BIT_NONE;
+	}
+}
+
+/**
  * Add the ground of a tile to the picture, and what lies on it.
  * @param tile The tile.
  * @param dist Distance of the tile from the camera.
@@ -915,8 +966,20 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	/* The game splits a slope along the line between the two corners at the same height. */
 	bool split_we = corner_z[CORNER_W] == corner_z[CORNER_E] || corner_z[CORNER_N] != corner_z[CORNER_S];
 
+	/* Straight track: smooth its ground along the track, over whole steps of the pixels of its edges.
+	 * Going a unit along it moves two columns in the texture, and a row less how much it climbs. */
+	std::pair<float, float> smooth = {0, 0};
+	TrackBits tracks = GetTileRailTracks(tile);
+	if (tracks == TRACK_BIT_X) {
+		float climb = (corner_z[CORNER_W] + corner_z[CORNER_S] - corner_z[CORNER_N] - corner_z[CORNER_E]) / (2 * TILE);
+		smooth = {-2 * TRACK_SMOOTH_LENGTH, (1 - climb) * TRACK_SMOOTH_LENGTH};
+	} else if (tracks == TRACK_BIT_Y) {
+		float climb = (corner_z[CORNER_E] + corner_z[CORNER_S] - corner_z[CORNER_N] - corner_z[CORNER_W]) / (2 * TILE);
+		smooth = {2 * TRACK_SMOOTH_LENGTH, (1 - climb) * TRACK_SMOOTH_LENGTH};
+	}
+
 	bool boxes = dist <= BOX_DIST && HasBoxes(tile);
-	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z, boxes);
+	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z, boxes, smooth);
 	float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
 	float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
 
@@ -1017,21 +1080,6 @@ void Renderer::AddBox(const BoxSpriteToDraw &box, int ground_z)
 	add_side(X_LOW, {Vec3{x0, y0, z0}, Vec3{x0, y1, z0}, Vec3{x0, y1, z1}, Vec3{x0, y0, z1}}, {-1, 0, 0});
 	add_side(Y_HIGH, {Vec3{x0, y1, z0}, Vec3{x1, y1, z0}, Vec3{x1, y1, z1}, Vec3{x0, y1, z1}}, {0, 1, 0});
 	add_side(Y_LOW, {Vec3{x0, y0, z0}, Vec3{x1, y0, z0}, Vec3{x1, y0, z1}, Vec3{x0, y0, z1}}, {0, -1, 0});
-}
-
-/**
- * Get the rail track on a tile.
- * @param tile The tile.
- * @return The track pieces.
- */
-static TrackBits GetTileRailTracks(TileIndex tile)
-{
-	switch (GetTileType(tile)) {
-		case MP_RAILWAY: return IsPlainRail(tile) ? GetTrackBits(tile) : TRACK_BIT_NONE;
-		case MP_STATION: return HasStationRail(tile) ? GetRailStationTrackBits(tile) : TRACK_BIT_NONE;
-		case MP_ROAD: return IsLevelCrossing(tile) ? GetCrossingRailBits(tile) : TRACK_BIT_NONE;
-		default: return TRACK_BIT_NONE;
-	}
 }
 
 /**

@@ -48,6 +48,9 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - **Koleje**: pražce do 10 dlaždic a kolejnice do 24 dlaždic jako skutečná geometrie (zblízka ostré), dál už jen
   štěrk v textuře; vzdálené kolejnice postupně splývají se štěrkem, aby netvořily ostré čáry přes celý obraz.
   Rovné, oblouky, výhybky, koleje ve stanici a na přejezdu.
+- Zem rovné koleje (osa X nebo Y) se vyhladí podél koleje (o 2 jednotky, `SmoothAlong`): v izometrických spritech
+  jsou okraje štěrku schody z pixelů (2:1), které by ve 3D tvořily zuby ±0,25 jednotky do stran, a při jízdě se
+  okraje kolejového lože třásly ze strany na stranu (na Macu ve zvětšeném okně, ~4–6 px za snímek v okně 1268 px).
 - **Nádraží** (doplněno po zkoušce na Macu, kde ve stanici chyběla nástupiště): nástupiště, budovy a střechy
   železničních stanic jsou kvádry, podle kterých je hra řadí v mapě (`CollectTileGroundSprites` je teď vrací
   s jejich sprity), a na stěny kvádru se promítne sprite tak, jak ho kreslí mapa. Stěny, které izometrický pohled
