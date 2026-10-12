@@ -52,8 +52,10 @@ static constexpr int CAB_VIEW_DIAL_HEIGHT = 52;
 static constexpr float CAB_VIEW_DIAL_START = 225.0f;
 /** Angle (in degrees) the speedometer needle sweeps from standstill to the maximum speed. */
 static constexpr float CAB_VIEW_DIAL_SWEEP = 270.0f;
-/** Number of major ticks on the speedometer dial. */
+/** Number of ticks on the speedometer dial. */
 static constexpr int CAB_VIEW_DIAL_TICKS = 10;
+/** Position of the maximum speed of the vehicle on the speedometer dial; beyond it is the red zone. */
+static constexpr float CAB_VIEW_DIAL_MAX_SPEED = 0.85f;
 /** Background of the dashboard. */
 static constexpr PixelColour CAB_VIEW_DASHBOARD_COLOUR = GREY_SCALE(1);
 /** Face of the speedometer dial. */
@@ -289,7 +291,7 @@ private:
 	/**
 	 * Draw the speedometer dial.
 	 * @param r Area to draw the dial in; it is centred in it.
-	 * @param speed_frac Current speed as fraction of the maximum speed.
+	 * @param speed_frac Current speed as fraction of the maximum speed of the vehicle.
 	 */
 	static void DrawSpeedometer(const Rect &r, float speed_frac)
 	{
@@ -307,10 +309,10 @@ private:
 		}
 		GfxFillPolygon(face, CAB_VIEW_DIAL_COLOUR);
 
-		/* The scale, with a warning zone near the maximum speed. */
+		/* The scale, with a red zone beyond the maximum speed of the vehicle. */
 		float scale_radius = radius - 2.0f * line;
-		DrawDialArc(cx, cy, scale_radius, 0.0f, 0.9f, PC_GREY, line);
-		DrawDialArc(cx, cy, scale_radius, 0.9f, 1.0f, PC_RED, line * 2);
+		DrawDialArc(cx, cy, scale_radius, 0.0f, CAB_VIEW_DIAL_MAX_SPEED, PC_GREY, line);
+		DrawDialArc(cx, cy, scale_radius, CAB_VIEW_DIAL_MAX_SPEED, 1.0f, PC_RED, line * 2);
 		for (int i = 0; i <= CAB_VIEW_DIAL_TICKS; i++) {
 			float f = static_cast<float>(i) / CAB_VIEW_DIAL_TICKS;
 			bool major = i % 2 == 0;
@@ -320,7 +322,7 @@ private:
 		}
 
 		/* What part of the scale we are using. */
-		float clamped = std::clamp(speed_frac, 0.0f, 1.0f);
+		float clamped = std::clamp(speed_frac * CAB_VIEW_DIAL_MAX_SPEED, 0.0f, 1.0f);
 		DrawDialArc(cx, cy, scale_radius - 6.0f * line, 0.0f, clamped, speed_frac > 0.95f ? PC_YELLOW : PC_GREEN, line * 2);
 
 		/* The needle, with its hub. */
