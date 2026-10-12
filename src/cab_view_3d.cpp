@@ -237,9 +237,9 @@ struct GroundTexture {
 struct TextureKeyHash {
 	size_t operator()(const std::vector<int32_t> &key) const
 	{
-		size_t h = 14695981039346656037ULL;
+		uint64_t h = 14695981039346656037ULL;
 		for (int32_t v : key) h = (h ^ static_cast<uint32_t>(v)) * 1099511628211ULL;
-		return h;
+		return static_cast<size_t>(h ^ (h >> 32));
 	}
 };
 
