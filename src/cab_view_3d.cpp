@@ -17,6 +17,11 @@
  * (x, y, z) of the tile is at screen pixel (2 (y - x), x + y - z), which is #RemapCoords.
  * Textures are sampled smoothly, so there are no big pixels even close by. Rails and sleepers
  * are drawn on top as geometry, so they stay sharp up close.
+ *
+ * Things standing on stations, like platforms and station buildings, are drawn as the boxes
+ * the viewport sorts them by, with the sprite mapped back onto the sides the same way. The
+ * sides the isometric view does not show get the picture of the opposite side, and where the
+ * sprite is transparent, the box is too.
  */
 
 #include "stdafx.h"
@@ -62,6 +67,7 @@ constexpr float RAIL_WIDTH = 0.44f; ///< Width of the head of a rail.
 constexpr float SLEEPER_LENGTH = 4.4f; ///< Length of a sleeper, across the track.
 constexpr float SLEEPER_WIDTH = 0.9f; ///< Width of a sleeper, along the track.
 constexpr float SLEEPER_SPACING = 2.0f; ///< Distance between sleepers.
+constexpr float BOX_DIST = 24.0f * TILE; ///< Platforms and buildings are drawn up to this distance.
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
 constexpr int MAX_THREADS = 8; ///< At most this many threads draw the picture.
 constexpr int STRIPE_HEIGHT = 4; ///< Height of the stripes of rows the threads draw.
@@ -160,7 +166,8 @@ public:
 struct Picture {
 	int width = 1; ///< Width in pixels.
 	int height = 1; ///< Height in pixels.
-	std::vector<RGB> pixels = {{0, 0, 0}}; ///< The pixels, row by row; all opaque.
+	std::vector<RGB> pixels = {{0, 0, 0}}; ///< The pixels, row by row.
+	std::vector<float> alpha; ///< Opacity of the pixels, row by row; empty when all are opaque.
 
 	/**
 	 * Sample the picture smoothly.
@@ -186,6 +193,28 @@ struct Picture {
 	}
 
 	/**
+	 * Sample the opacity of the picture smoothly; outside the picture it is transparent.
+	 * @param x Horizontal position in pixels.
+	 * @param y Vertical position in pixels.
+	 * @return The opacity, from 0 to 1.
+	 */
+	float SampleAlpha(float x, float y) const
+	{
+		if (this->alpha.empty()) return 1.0f;
+		float fx = x - 0.5f;
+		float fy = y - 0.5f;
+		int x0 = static_cast<int>(std::floor(fx));
+		int y0 = static_cast<int>(std::floor(fy));
+		fx -= x0;
+		fy -= y0;
+		auto at = [this](int px, int py) {
+			if (px < 0 || py < 0 || px >= this->width || py >= this->height) return 0.0f;
+			return this->alpha[py * this->width + px];
+		};
+		return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+	}
+
+	/**
 	 * Make a picture of half the size, each pixel the average of four.
 	 * @return The smaller picture.
 	 */
@@ -195,15 +224,20 @@ struct Picture {
 		half.width = std::max(1, (this->width + 1) / 2);
 		half.height = std::max(1, (this->height + 1) / 2);
 		half.pixels.assign(static_cast<size_t>(half.width) * half.height, {0, 0, 0});
+		if (!this->alpha.empty()) half.alpha.assign(half.pixels.size(), 0.0f);
 		for (int y = 0; y < half.height; y++) {
 			for (int x = 0; x < half.width; x++) {
 				RGB sum = {0, 0, 0};
+				float alpha_sum = 0;
 				for (int dy = 0; dy < 2; dy++) {
 					for (int dx = 0; dx < 2; dx++) {
-						sum = sum + this->pixels[std::min(2 * y + dy, this->height - 1) * this->width + std::min(2 * x + dx, this->width - 1)];
+						size_t idx = static_cast<size_t>(std::min(2 * y + dy, this->height - 1)) * this->width + std::min(2 * x + dx, this->width - 1);
+						sum = sum + this->pixels[idx];
+						if (!this->alpha.empty()) alpha_sum += this->alpha[idx];
 					}
 				}
 				half.pixels[y * half.width + x] = sum * 0.25f;
+				if (!half.alpha.empty()) half.alpha[y * half.width + x] = alpha_sum * 0.25f;
 			}
 		}
 		return half;
@@ -213,7 +247,10 @@ struct Picture {
 /** Number of smaller versions of a ground texture, used further away so the ground does not glitter. */
 constexpr int TEXTURE_LEVELS = 4;
 
-/** The ground sprites of a tile put together, in normal zoom screen pixels. */
+/**
+ * The ground sprites of a tile put together, in normal zoom screen pixels.
+ * Also used for a single sprite standing in a box; then it is relative to where the sprite is drawn.
+ */
 struct GroundTexture {
 	int left = 0; ///< Screen column of the first pixel, relative to the north corner of the tile.
 	int top = 0; ///< Screen row of the first pixel, relative to the north corner of the tile at its height.
@@ -230,6 +267,19 @@ struct GroundTexture {
 	{
 		float scale = 1.0f / (1 << level);
 		return this->levels[level].Sample((col - this->left) * scale, (row - this->top) * scale);
+	}
+
+	/**
+	 * Sample the opacity of the texture smoothly.
+	 * @param col Screen column relative to the north corner of the tile.
+	 * @param row Screen row relative to the north corner of the tile at its height.
+	 * @param level Which version of the picture to use.
+	 * @return The opacity, from 0 to 1.
+	 */
+	float SampleAlpha(float col, float row, int level) const
+	{
+		float scale = 1.0f / (1 << level);
+		return this->levels[level].SampleAlpha((col - this->left) * scale, (row - this->top) * scale);
 	}
 };
 
@@ -277,6 +327,7 @@ struct Paint {
 	float shade; ///< Brightness of the textured ground.
 	int level; ///< Which version of the texture to use, see #GroundTexture::levels.
 	float bias; ///< Depth bias, so things lying on the ground win from the ground.
+	bool cutout = false; ///< Whether pixels where the texture is transparent are left out.
 };
 
 /** A triangle on the screen, ready to fill. */
@@ -297,6 +348,7 @@ public:
 	{
 		this->sprites.clear();
 		this->textures.clear();
+		this->box_textures.clear();
 		this->frame = {};
 		this->depth = {};
 		this->frame_valid = false;
@@ -314,11 +366,14 @@ private:
 
 	std::unordered_map<SpriteID, RawSprite> sprites; ///< Sprites loaded so far.
 	std::unordered_map<std::vector<int32_t>, GroundTexture, TextureKeyHash> textures; ///< Ground textures put together so far.
+	std::unordered_map<uint64_t, GroundTexture> box_textures; ///< Textures of sprites standing in boxes, by sprite and palette.
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
+	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
 
 	const RawSprite &GetRawSprite(SpriteID sprite);
-	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z);
+	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes);
+	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal);
 	RGB Fog(const RGB &colour, float dist) const;
 
 	std::vector<ScreenTriangle> triangles; ///< Triangles of the current picture, nearest first.
@@ -331,6 +386,7 @@ private:
 	void DrawSky();
 	void AddTile(TileIndex tile, float dist);
 	void AddTrack(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddBox(const BoxSpriteToDraw &box, int ground_z);
 	void Output(const Rect &r);
 };
 
@@ -368,16 +424,136 @@ static bool IsUnderBuilding(const SpriteLoader::CommonPixel &p)
 }
 
 /**
+ * Finish a texture whose picture has been painted: undo the premultiplied alpha, grow the picture
+ * into the transparent pixels around it, so smooth sampling at the edges does not mix in black,
+ * and make the smaller versions of it.
+ * @param tex The texture, with its picture painted in its first level.
+ * @param alpha Opacity of the pixels of the picture.
+ * @param passes How many pixels at most the picture grows.
+ * @param keep_alpha Whether to keep the opacity, for leaving out the transparent pixels when drawing.
+ */
+static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int passes, bool keep_alpha)
+{
+	Picture &pic = tex.levels[0];
+	if (keep_alpha) {
+		/* Widen the opaque area by a pixel: the edges of the sprite are steps of pixels along the edges of
+		 * its box, which would otherwise cut teeth into the sides of the box. */
+		pic.alpha = alpha;
+		for (int y = 0; y < pic.height; y++) {
+			for (int x = 0; x < pic.width; x++) {
+				float &a = pic.alpha[static_cast<size_t>(y) * pic.width + x];
+				for (int dy = -1; dy <= 1; dy++) {
+					for (int dx = -1; dx <= 1; dx++) {
+						int nx = x + dx, ny = y + dy;
+						if (nx < 0 || ny < 0 || nx >= pic.width || ny >= pic.height) continue;
+						a = std::max(a, alpha[static_cast<size_t>(ny) * pic.width + nx]);
+					}
+				}
+			}
+		}
+	}
+
+	RGB sum = {0, 0, 0};
+	float count = 0;
+	for (size_t i = 0; i < pic.pixels.size(); i++) {
+		if (alpha[i] <= 0) continue;
+		pic.pixels[i] = pic.pixels[i] * (1.0f / alpha[i]);
+		sum = sum + pic.pixels[i];
+		count++;
+	}
+	for (int pass = 0; pass < passes; pass++) {
+		std::vector<float> grown = alpha;
+		bool changed = false;
+		for (int y = 0; y < pic.height; y++) {
+			for (int x = 0; x < pic.width; x++) {
+				size_t idx = static_cast<size_t>(y) * pic.width + x;
+				if (alpha[idx] > 0) continue;
+				RGB acc = {0, 0, 0};
+				int n = 0;
+				auto take = [&](int nx, int ny) {
+					if (nx < 0 || ny < 0 || nx >= pic.width || ny >= pic.height) return;
+					size_t nidx = static_cast<size_t>(ny) * pic.width + nx;
+					if (alpha[nidx] <= 0) return;
+					acc = acc + pic.pixels[nidx];
+					n++;
+				};
+				take(x - 1, y);
+				take(x + 1, y);
+				take(x, y - 1);
+				take(x, y + 1);
+				if (n == 0) continue;
+				pic.pixels[idx] = acc * (1.0f / n);
+				grown[idx] = 1;
+				changed = true;
+			}
+		}
+		alpha = std::move(grown);
+		if (!changed) break;
+	}
+	RGB mean = count > 0 ? sum * (1.0f / count) : RGB{0, 0, 0};
+	for (size_t i = 0; i < pic.pixels.size(); i++) {
+		if (alpha[i] <= 0) pic.pixels[i] = mean;
+	}
+
+	for (int level = 1; level < TEXTURE_LEVELS; level++) tex.levels[level] = tex.levels[level - 1].Halve();
+}
+
+/**
+ * Paint a sprite into a picture, on top of what is there.
+ * @param pic The picture.
+ * @param alpha Opacity of the pixels of the picture.
+ * @param raw The sprite.
+ * @param pal Its palette.
+ * @param ox Column of the picture for the top left pixel of the sprite.
+ * @param oy Row of the picture for the top left pixel of the sprite.
+ * @param skip_under_building Leave out the pixels under buildings, see #IsUnderBuilding.
+ */
+static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite &raw, PaletteID pal, int ox, int oy, bool skip_under_building)
+{
+	const uint8_t *remap = (pal != PAL_NONE) ? GetNonSprite(GB(pal, 0, PALETTE_WIDTH), SpriteType::Recolour) + 1 : nullptr;
+	for (int y = 0; y < raw.height; y++) {
+		for (int x = 0; x < raw.width; x++) {
+			const SpriteLoader::CommonPixel &p = raw.pixels[y * raw.width + x];
+			if (p.a == 0) continue;
+			if (skip_under_building && IsUnderBuilding(p)) continue;
+			RGB c;
+			if (p.m != 0) {
+				const Colour &pc = _cur_palette.palette[remap != nullptr ? remap[p.m] : p.m];
+				c = {static_cast<float>(pc.r), static_cast<float>(pc.g), static_cast<float>(pc.b)};
+			} else {
+				c = {static_cast<float>(p.r), static_cast<float>(p.g), static_cast<float>(p.b)};
+			}
+			size_t idx = static_cast<size_t>(oy + y) * pic.width + ox + x;
+			float a = p.a / 255.0f;
+			pic.pixels[idx] = pic.pixels[idx] * (1 - a) + c * a;
+			alpha[idx] = a + alpha[idx] * (1 - a);
+		}
+	}
+}
+
+/**
+ * Whether the things standing on a tile are drawn as boxes.
+ * @param tile The tile.
+ * @return True for rail stations; their platforms and buildings.
+ */
+static bool HasBoxes(TileIndex tile)
+{
+	return IsTileType(tile, MP_STATION) && IsRailStation(tile);
+}
+
+/**
  * Get the ground texture of a tile, putting it together from the tile's ground sprites when needed.
  * Tiles that look the same share the texture.
  * @param tile The tile.
  * @param tile_z Height of the tile as the viewport uses it, see #GetTilePixelSlope.
+ * @param boxes Whether to also collect the sprites standing in boxes on the tile, into #box_sprites.
  * @return The texture.
  */
-const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z)
+const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool boxes)
 {
 	this->ground_sprites.clear();
-	CollectTileGroundSprites(tile, this->ground_sprites);
+	this->box_sprites.clear();
+	CollectTileGroundSprites(tile, this->ground_sprites, boxes ? &this->box_sprites : nullptr);
 
 	/* Positions relative to the north corner of the tile, in normal zoom pixels. */
 	Point origin = RemapCoords(TileX(tile) * TILE_SIZE, TileY(tile) * TILE_SIZE, tile_z);
@@ -422,77 +598,38 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z)
 	/* Put the sprites on top of each other, like the viewport draws them. */
 	for (size_t i = 0; i < this->key.size(); i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
-		PaletteID pal = this->key[i + 1];
-		const uint8_t *remap = (pal != PAL_NONE) ? GetNonSprite(GB(pal, 0, PALETTE_WIDTH), SpriteType::Recolour) + 1 : nullptr;
-		int ox = this->key[i + 2] + raw.x_offs - left;
-		int oy = this->key[i + 3] + raw.y_offs - top;
-		for (int y = 0; y < raw.height; y++) {
-			for (int x = 0; x < raw.width; x++) {
-				const SpriteLoader::CommonPixel &p = raw.pixels[y * raw.width + x];
-				if (p.a == 0) continue;
-				if (building && IsUnderBuilding(p)) continue;
-				RGB c;
-				if (p.m != 0) {
-					const Colour &pc = _cur_palette.palette[remap != nullptr ? remap[p.m] : p.m];
-					c = {static_cast<float>(pc.r), static_cast<float>(pc.g), static_cast<float>(pc.b)};
-				} else {
-					c = {static_cast<float>(p.r), static_cast<float>(p.g), static_cast<float>(p.b)};
-				}
-				size_t idx = static_cast<size_t>(oy + y) * pic.width + ox + x;
-				float a = p.a / 255.0f;
-				pic.pixels[idx] = pic.pixels[idx] * (1 - a) + c * a;
-				alpha[idx] = a + alpha[idx] * (1 - a);
-			}
-		}
+		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top, building);
 	}
 
-	/* Undo the premultiplied alpha, and grow the picture into the transparent pixels around
-	 * it, so smooth sampling at the edges of the tile does not mix in black. */
-	RGB sum = {0, 0, 0};
-	float count = 0;
-	for (size_t i = 0; i < pic.pixels.size(); i++) {
-		if (alpha[i] <= 0) continue;
-		pic.pixels[i] = pic.pixels[i] * (1.0f / alpha[i]);
-		sum = sum + pic.pixels[i];
-		count++;
-	}
-	int passes = building ? MAX_FILL_PASSES : 4;
-	for (int pass = 0; pass < passes; pass++) {
-		std::vector<float> grown = alpha;
-		bool changed = false;
-		for (int y = 0; y < pic.height; y++) {
-			for (int x = 0; x < pic.width; x++) {
-				size_t idx = static_cast<size_t>(y) * pic.width + x;
-				if (alpha[idx] > 0) continue;
-				RGB acc = {0, 0, 0};
-				int n = 0;
-				auto take = [&](int nx, int ny) {
-					if (nx < 0 || ny < 0 || nx >= pic.width || ny >= pic.height) return;
-					size_t nidx = static_cast<size_t>(ny) * pic.width + nx;
-					if (alpha[nidx] <= 0) return;
-					acc = acc + pic.pixels[nidx];
-					n++;
-				};
-				take(x - 1, y);
-				take(x + 1, y);
-				take(x, y - 1);
-				take(x, y + 1);
-				if (n == 0) continue;
-				pic.pixels[idx] = acc * (1.0f / n);
-				grown[idx] = 1;
-				changed = true;
-			}
-		}
-		alpha = std::move(grown);
-		if (!changed) break;
-	}
-	RGB mean = count > 0 ? sum * (1.0f / count) : RGB{0, 0, 0};
-	for (size_t i = 0; i < pic.pixels.size(); i++) {
-		if (alpha[i] <= 0) pic.pixels[i] = mean;
-	}
+	FinishTexture(tex, std::move(alpha), building ? MAX_FILL_PASSES : 4, false);
+	return tex;
+}
 
-	for (int level = 1; level < TEXTURE_LEVELS; level++) tex.levels[level] = tex.levels[level - 1].Halve();
+/**
+ * Get the texture of a sprite standing in a box, making it when needed.
+ * Its pixels are relative to where the viewport would draw the sprite, before its offsets.
+ * @param image The sprite.
+ * @param pal Its palette.
+ * @return The texture; without any pixels when the sprite has none.
+ */
+const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal)
+{
+	uint64_t key = (static_cast<uint64_t>(image) << 32) | pal;
+	auto it = this->box_textures.find(key);
+	if (it != this->box_textures.end()) return it->second;
+	GroundTexture &tex = this->box_textures[key];
 
+	const RawSprite &raw = this->GetRawSprite(image & SPRITE_MASK);
+	if (raw.pixels.empty()) return tex;
+	tex.left = raw.x_offs;
+	tex.top = raw.y_offs;
+	Picture &pic = tex.levels[0];
+	pic.width = raw.width;
+	pic.height = raw.height;
+	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, {0, 0, 0});
+	std::vector<float> alpha(pic.pixels.size(), 0.0f);
+	PaintSprite(pic, alpha, raw, pal, 0, 0, false);
+	FinishTexture(tex, std::move(alpha), 4, true);
 	return tex;
 }
 
@@ -648,12 +785,12 @@ void Renderer::Rasterise(int stripe, int stripes)
 			for (int x = xs; x <= xe; x++, idx++, w0 += t.ex[0], w1 += t.ex[1], w2 += t.ex[2]) {
 				float inv = (w0 * t.iw[0] + w1 * t.iw[1] + w2 * t.iw[2]) * paint.bias;
 				if (inv <= this->depth[idx]) continue;
-				this->depth[idx] = inv;
 				float dist = paint.bias / inv;
 
 				RGB colour = paint.colour;
 				if (paint.texture != nullptr) {
 					for (int k = 0; k < ATTRIBUTES; k++) attr[k] = (w0 * t.aw[0][k] + w1 * t.aw[1][k] + w2 * t.aw[2][k]) * dist;
+					if (paint.cutout && paint.texture->SampleAlpha(attr[0], attr[1], paint.level) < 0.5f) continue;
 					colour = paint.texture->Sample(attr[0], attr[1], paint.level);
 					float light = paint.shade;
 					if (dist < DETAIL_DIST) {
@@ -665,6 +802,7 @@ void Renderer::Rasterise(int stripe, int stripes)
 					}
 					colour = colour * light;
 				}
+				this->depth[idx] = inv;
 				this->frame[idx] = Pack(this->Fog(colour, dist));
 			}
 		}
@@ -739,7 +877,8 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	/* The game splits a slope along the line between the two corners at the same height. */
 	bool split_we = corner_z[CORNER_W] == corner_z[CORNER_E] || corner_z[CORNER_N] != corner_z[CORNER_S];
 
-	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z);
+	bool boxes = dist <= BOX_DIST && HasBoxes(tile);
+	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z, boxes);
 	float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
 	float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
 
@@ -785,6 +924,61 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	}
 
 	this->AddTrack(tile, corner_z, split_we, dist);
+	if (boxes) {
+		for (const BoxSpriteToDraw &box : this->box_sprites) this->AddBox(box, z);
+	}
+}
+
+/**
+ * Add a thing standing on a tile as the box the viewport sorts it by, with its sprite on the sides.
+ * @param box The sprite and its box.
+ * @param ground_z Height of the ground of the tile it stands on.
+ */
+void Renderer::AddBox(const BoxSpriteToDraw &box, int ground_z)
+{
+	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal);
+	if (tex.levels[0].alpha.empty()) return;
+
+	const float x0 = static_cast<float>(box.xmin), x1 = static_cast<float>(box.xmax + 1);
+	const float y0 = static_cast<float>(box.ymin), y1 = static_cast<float>(box.ymax + 1);
+	const float z0 = static_cast<float>(box.zmin), z1 = static_cast<float>(box.zmax + 1);
+	/* Where the viewport would draw the sprite, in normal zoom screen pixels. */
+	const float sx = static_cast<float>(box.x) / ZOOM_BASE;
+	const float sy = static_cast<float>(box.y) / ZOOM_BASE;
+
+	/* A side the isometric view does not show gets the picture of the opposite side: the point on the side is
+	 * moved there before it is projected into the sprite. The fine pattern runs along the side. */
+	enum Side : uint8_t { TOP, BOTTOM, X_HIGH, X_LOW, Y_HIGH, Y_LOW };
+	auto add_side = [&](Side side, const std::array<Vec3, 4> &quad, const Vec3 &normal) {
+		/* Leave out sides facing away from the camera. */
+		if ((this->cam.pos - quad[0]).Dot(normal) <= 0) return;
+		std::array<ClipVertex, 4> v;
+		for (int i = 0; i < 4; i++) {
+			Vec3 p = quad[i];
+			Vec3 m = p;
+			if (side == BOTTOM) m.z = z1;
+			if (side == X_LOW) m.x = x1;
+			if (side == Y_LOW) m.y = y1;
+			v[i].c = this->cam.ToCamera(p);
+			v[i].a[0] = 2.0f * (m.y - m.x) - sx;
+			v[i].a[1] = (m.x + m.y - m.z) - sy;
+			switch (side) {
+				case TOP: case BOTTOM: v[i].a[2] = p.x; v[i].a[3] = p.y; break;
+				case X_HIGH: case X_LOW: v[i].a[2] = p.y; v[i].a[3] = p.z; break;
+				default: v[i].a[2] = p.x; v[i].a[3] = p.z; break;
+			}
+		}
+		Paint paint = {&tex, {}, Shade(normal), 0, 1.0f, true};
+		this->AddTriangle({v[0], v[1], v[2]}, paint);
+		this->AddTriangle({v[0], v[2], v[3]}, paint);
+	};
+
+	add_side(TOP, {Vec3{x0, y0, z1}, Vec3{x1, y0, z1}, Vec3{x1, y1, z1}, Vec3{x0, y1, z1}}, {0, 0, 1});
+	if (z0 > ground_z) add_side(BOTTOM, {Vec3{x0, y0, z0}, Vec3{x1, y0, z0}, Vec3{x1, y1, z0}, Vec3{x0, y1, z0}}, {0, 0, -1});
+	add_side(X_HIGH, {Vec3{x1, y0, z0}, Vec3{x1, y1, z0}, Vec3{x1, y1, z1}, Vec3{x1, y0, z1}}, {1, 0, 0});
+	add_side(X_LOW, {Vec3{x0, y0, z0}, Vec3{x0, y1, z0}, Vec3{x0, y1, z1}, Vec3{x0, y0, z1}}, {-1, 0, 0});
+	add_side(Y_HIGH, {Vec3{x0, y1, z0}, Vec3{x1, y1, z0}, Vec3{x1, y1, z1}, Vec3{x0, y1, z1}}, {0, 1, 0});
+	add_side(Y_LOW, {Vec3{x0, y0, z0}, Vec3{x1, y0, z0}, Vec3{x1, y0, z1}, Vec3{x0, y0, z1}}, {0, -1, 0});
 }
 
 /**
@@ -951,6 +1145,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 
 	auto start = std::chrono::steady_clock::now();
 	if (this->textures.size() >= MAX_TEXTURES) this->textures.clear();
+	if (this->box_textures.size() >= MAX_TEXTURES) this->box_textures.clear();
 
 	this->width = r.Width();
 	this->height = r.Height();

@@ -48,6 +48,12 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - **Koleje**: pražce do 10 dlaždic a kolejnice do 24 dlaždic jako skutečná geometrie (zblízka ostré), dál už jen
   štěrk v textuře; vzdálené kolejnice postupně splývají se štěrkem, aby netvořily ostré čáry přes celý obraz.
   Rovné, oblouky, výhybky, koleje ve stanici a na přejezdu.
+- **Nádraží** (doplněno po zkoušce na Macu, kde ve stanici chyběla nástupiště): nástupiště, budovy a střechy
+  železničních stanic jsou kvádry, podle kterých je hra řadí v mapě (`CollectTileGroundSprites` je teď vrací
+  s jejich sprity), a na stěny kvádru se promítne sprite tak, jak ho kreslí mapa. Stěny, které izometrický pohled
+  neukazuje, dostanou obrázek protější stěny; kde je sprite průhledný, je průhledný i kvádr (sloupy, okraje).
+  Trolejové vedení se vynechává (zatím jen tenké čáry). Funguje i pro stanice z NewGRF. Budova nádraží je zatím
+  jen kvádr se střechou namalovanou na stěnách – skutečné tvary budov jsou úkol kroku 4.
 - Opar od 14 dlaždic, dohled 56 dlaždic, obloha s přechodem do oparu.
 - **Kamera** na čele vlaku ve výšce střechy (8 jednotek), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
   (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu a v tunelu je obraz černý.
@@ -59,7 +65,7 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   měří sám, protože `delta_ms` je zaokrouhlené dolů), když vlak stojí, jednou za sekundu.
 - **Měření**: hru spustit s `-d misc=3`, do logu se pak u každého snímku píše čas přípravy, vyplnění a výstupu.
   Linux VM se 4 jádry, okno 1268×620 px (rozhraní 2×): příprava ~4 ms, vyplnění ~15–18 ms, výstup ~3 ms.
-- Zatím chybí (krok 4): budovy, nádraží, návěstidla, stromy, vozidla, mosty a portály tunelů (vlak zatím vjede
+- Zatím chybí (krok 4): budovy, návěstidla, trolejové vedení, stromy, vozidla, mosty a portály tunelů (vlak zatím vjede
   „do kopce“), silnice jen jako textura země. Pravoúhlé zatáčky jsou ve hře velmi ostré, takže v nich kolej na
   okamžik zmizí ze záběru; svahy jsou strmé (50 %) stejně jako ve hře.
 
