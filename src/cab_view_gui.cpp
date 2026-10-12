@@ -14,6 +14,9 @@
 #include "vehicle_base.h"
 #include "vehicle_gui.h"
 #include "train.h"
+#include "landscape.h"
+#include "pbs.h"
+#include "pathfinder/follow_track.hpp"
 #include "company_func.h"
 #include "strings_func.h"
 #include "zoom_func.h"
@@ -39,6 +42,8 @@ static constexpr float CAB_VIEW_EASE_MS = 650.0f;
 static constexpr float CAB_VIEW_REACH_MIN = 0.30f;
 /** Look-ahead at full speed, as fraction of half the viewport size. */
 static constexpr float CAB_VIEW_REACH_MAX = 0.60f;
+/** How many tiles ahead along the track the camera looks at most. */
+static constexpr int CAB_VIEW_MAX_TRACK_TILES = 48;
 /** How often (in milliseconds) the dashboard is refreshed. */
 static constexpr uint CAB_VIEW_DASHBOARD_REFRESH_MS = 100;
 /** Minimal height of the speedometer dial, in unscaled GUI pixels. */
@@ -87,6 +92,61 @@ private:
 	int load_width = 0; ///< Width of the load part of the dashboard.
 
 	/**
+	 * Find the point ahead along the track of a train where the camera should look.
+	 * Walks the track from the front of the train until it leaves the ellipse with the
+	 * given half axes around the train, so in curves the camera looks around the corner.
+	 * At junctions it follows the reserved path, if there is one, and otherwise stops.
+	 * @param t The train.
+	 * @param ax Horizontal half axis of the ellipse, in virtual viewport coordinates.
+	 * @param ay Vertical half axis of the ellipse, in virtual viewport coordinates.
+	 * @return Offset from the train in virtual viewport coordinates, or std::nullopt when the track cannot be followed.
+	 */
+	static std::optional<Point> GetTrackLookAheadTarget(const Train *t, float ax, float ay)
+	{
+		/* In depots, tunnels and on bridges, fall back to the direction of travel. */
+		if (t->track == TRACK_BIT_DEPOT || t->track == TRACK_BIT_WORMHOLE) return std::nullopt;
+		Trackdir td = t->GetVehicleTrackdir();
+		if (td == INVALID_TRACKDIR) return std::nullopt;
+
+		Point base = RemapCoords(t->x_pos, t->y_pos, t->z_pos);
+		Point last = {0, 0};
+		TileIndex tile = t->tile;
+		CFollowTrackRail ft(t);
+
+		for (int i = 0; i < CAB_VIEW_MAX_TRACK_TILES; i++) {
+			if (!ft.Follow(tile, td)) break;
+			/* Do not turn around at the end of the line. */
+			if (ft.new_tile == tile) break;
+
+			TrackdirBits options = ft.new_td_bits;
+			if (KillFirstBit(options) != TRACKDIR_BIT_NONE) {
+				/* A junction: only continue when we know which way the train goes. */
+				TrackdirBits reserved = options & TrackBitsToTrackdirBits(GetReservedTrackbits(ft.new_tile));
+				if (!HasExactlyOneBit(reserved)) break;
+				options = reserved;
+			}
+
+			tile = ft.new_tile;
+			td = FindFirstTrackdir(options);
+
+			int x = TileX(tile) * TILE_SIZE + TILE_SIZE / 2;
+			int y = TileY(tile) * TILE_SIZE + TILE_SIZE / 2;
+			Point pt = RemapCoords(x, y, GetSlopePixelZ(x, y));
+			Point d = {pt.x - base.x, pt.y - base.y};
+
+			float e = (d.x / ax) * (d.x / ax) + (d.y / ay) * (d.y / ay);
+			if (e >= 1.0f) {
+				/* Bring the point back onto the edge of the ellipse. */
+				float f = 1.0f / std::sqrt(e);
+				return Point{static_cast<int>(d.x * f), static_cast<int>(d.y * f)};
+			}
+			last = d;
+		}
+
+		return last;
+	}
+
+	/**
 	 * Determine where the camera should be, relative to the vehicle.
 	 * @param v The vehicle we ride along with.
 	 * @return Offset in virtual viewport coordinates.
@@ -95,21 +155,27 @@ private:
 	{
 		if (!_cab_view_look_ahead) return {0, 0};
 
+		/* Look further ahead the faster we go, but keep some look-ahead when standing still. */
+		int max_speed = v->GetDisplayMaxSpeed();
+		float speed_frac = max_speed > 0 ? std::clamp(static_cast<float>(v->GetDisplaySpeed()) / max_speed, 0.0f, 1.0f) : 0.0f;
+		float reach = CAB_VIEW_REACH_MIN + (CAB_VIEW_REACH_MAX - CAB_VIEW_REACH_MIN) * speed_frac;
+		float ax = reach * this->viewport->virtual_width / 2;
+		float ay = reach * this->viewport->virtual_height / 2;
+		if (ax < 1 || ay < 1) return {0, 0};
+
+		if (v->type == VEH_TRAIN) {
+			std::optional<Point> target = GetTrackLookAheadTarget(Train::From(v), ax, ay);
+			if (target.has_value()) return *target;
+		}
+
 		/* Direction of travel projected onto the screen, see RemapCoords. */
 		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
 		float sx = (diff.y - diff.x) * 2.0f;
 		float sy = static_cast<float>(diff.y + diff.x);
 		float len = std::hypot(sx, sy);
 		if (len == 0) return {0, 0};
-		sx /= len;
-		sy /= len;
 
-		/* Look further ahead the faster we go, but keep some look-ahead when standing still. */
-		int max_speed = v->GetDisplayMaxSpeed();
-		float speed_frac = max_speed > 0 ? std::clamp(static_cast<float>(v->GetDisplaySpeed()) / max_speed, 0.0f, 1.0f) : 0.0f;
-		float reach = CAB_VIEW_REACH_MIN + (CAB_VIEW_REACH_MAX - CAB_VIEW_REACH_MIN) * speed_frac;
-
-		return {static_cast<int>(sx * reach * this->viewport->virtual_width / 2), static_cast<int>(sy * reach * this->viewport->virtual_height / 2)};
+		return {static_cast<int>(sx / len * ax), static_cast<int>(sy / len * ay)};
 	}
 
 	/** Push the current look-ahead offset to the viewport. */
