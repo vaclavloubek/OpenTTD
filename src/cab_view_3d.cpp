@@ -40,6 +40,10 @@
 #include "gfx_func.h"
 #include "palette_func.h"
 #include "debug.h"
+#include "vehicle_base.h"
+#include "vehicle_func.h"
+#include "train.h"
+#include "roadveh.h"
 
 #include "table/sprites.h"
 
@@ -69,7 +73,10 @@ constexpr float SLEEPER_LENGTH = 4.4f; ///< Length of a sleeper, across the trac
 constexpr float SLEEPER_WIDTH = 0.9f; ///< Width of a sleeper, along the track.
 constexpr float SLEEPER_SPACING = 2.0f; ///< Distance between sleepers.
 constexpr float TRACK_SMOOTH_LENGTH = 2.0f; ///< Length along straight track over which its ground is smoothed, see #SmoothAlong.
-constexpr float BOX_DIST = 24.0f * TILE; ///< Platforms and buildings are drawn up to this distance.
+constexpr float BOX_DIST = 32.0f * TILE; ///< Buildings, trees, signals and vehicles are drawn up to this distance.
+constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles in the 3D view, compared to their heights in the sprites; the isometric view makes them look tall.
+constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
+constexpr float MIN_ROOF_HEIGHT = 3.0f; ///< A building is given a roof when its sprite reaches at least this much above its walls.
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
 constexpr size_t MAX_NEW_TEXTURES_TIMED = 32; ///< Pictures that make more new textures don't count for the average time of a picture.
 constexpr int MAX_THREADS = 8; ///< At most this many threads draw the picture.
@@ -297,6 +304,34 @@ struct TextureKeyHash {
 	}
 };
 
+/**
+ * Where a thing dressed in a sprite stands in the world. Points of the thing are given in the coordinates of its
+ * sprite: the point (x, y, z) is at sprite pixel (2 (y - x) - sx, x + y - z - sy), see #RemapCoords. They are
+ * turned around the vertical axis and moved to their place, and their heights are scaled.
+ */
+struct Placement {
+	Vec3 origin = {0, 0, 0}; ///< Where the point (0, 0, 0) of the thing is in the world.
+	float cos = 1; ///< Cosine of the angle the thing is turned by.
+	float sin = 0; ///< Sine of the angle the thing is turned by.
+	float base = 0; ///< Height the heights of the thing are scaled from.
+	float height_scale = 1; ///< How much the heights above #base are scaled.
+	float sx = 0; ///< Screen column where the viewport draws the sprite, in normal zoom pixels.
+	float sy = 0; ///< Screen row where the viewport draws the sprite, in normal zoom pixels.
+
+	/** Get the world position of a point of the thing. */
+	Vec3 ToWorld(const Vec3 &p) const
+	{
+		return {this->origin.x + p.x * this->cos - p.y * this->sin, this->origin.y + p.x * this->sin + p.y * this->cos,
+			this->origin.z + this->base + (p.z - this->base) * this->height_scale};
+	}
+
+	/** Get the world direction of a horizontal or vertical direction of the thing. */
+	Vec3 Turn(const Vec3 &d) const
+	{
+		return {d.x * this->cos - d.y * this->sin, d.x * this->sin + d.y * this->cos, d.z};
+	}
+};
+
 /** Camera with its projection. */
 struct Camera {
 	Vec3 pos; ///< Position of the eye.
@@ -390,7 +425,7 @@ private:
 
 	const RawSprite &GetRawSprite(SpriteID sprite);
 	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
-	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal);
+	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal, bool widen = true);
 	RGB Fog(const RGB &colour, float dist) const;
 
 	std::vector<ScreenTriangle> triangles; ///< Triangles of the current picture, nearest first.
@@ -403,7 +438,12 @@ private:
 	void DrawSky();
 	void AddTile(TileIndex tile, float dist);
 	void AddTrack(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
-	void AddBox(const BoxSpriteToDraw &box, int ground_z);
+	void AddBox(const BoxSpriteToDraw &box, int ground_z, float height_scale);
+	void AddBuilding(const BoxSpriteToDraw &box, float height_scale);
+	void AddBillboard(const BoxSpriteToDraw &box);
+	void AddVehicles();
+	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
+	void AddSpriteBox(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, bool bottom, bool top, bool cutout = true);
 	void ChooseScale(float budget_ms);
 	void Output(const Rect &r);
 };
@@ -498,11 +538,14 @@ static Picture SmoothAlong(const Picture &pic, float dx, float dy)
  * @param passes How many pixels at most the picture grows.
  * @param keep_alpha Whether to keep the opacity, for leaving out the transparent pixels when drawing.
  * @param smooth How far to smooth the picture, in pixels, see #SmoothAlong; nothing when zero.
+ * @param widen Whether to widen the opaque area by a pixel, against teeth along the sides of boxes; not for cut-outs.
  */
-static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int passes, bool keep_alpha, std::pair<float, float> smooth = {0, 0})
+static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int passes, bool keep_alpha, std::pair<float, float> smooth = {0, 0}, bool widen = true)
 {
 	Picture &pic = tex.levels[0];
-	if (keep_alpha) {
+	if (keep_alpha && !widen) {
+		pic.alpha = alpha;
+	} else if (keep_alpha) {
 		/* Widen the opaque area by a pixel: the edges of the sprite are steps of pixels along the edges of
 		 * its box, which would otherwise cut teeth into the sides of the box. */
 		pic.alpha = alpha;
@@ -600,16 +643,6 @@ static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite
 }
 
 /**
- * Whether the things standing on a tile are drawn as boxes.
- * @param tile The tile.
- * @return True for rail stations; their platforms and buildings.
- */
-static bool HasBoxes(TileIndex tile)
-{
-	return IsTileType(tile, MP_STATION) && IsRailStation(tile);
-}
-
-/**
  * Get the ground texture of a tile, putting it together from the tile's ground sprites when needed.
  * Tiles that look the same share the texture.
  * @param tile The tile.
@@ -684,11 +717,12 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
  * Its pixels are relative to where the viewport would draw the sprite, before its offsets.
  * @param image The sprite.
  * @param pal Its palette.
+ * @param widen Whether to widen the opaque area by a pixel, see #FinishTexture.
  * @return The texture; without any pixels when the sprite has none.
  */
-const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal)
+const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal, bool widen)
 {
-	uint64_t key = (static_cast<uint64_t>(image) << 32) | pal;
+	uint64_t key = (static_cast<uint64_t>(image) << 33) | (static_cast<uint64_t>(pal) << 1) | (widen ? 1 : 0);
 	auto it = this->box_textures.find(key);
 	if (it != this->box_textures.end()) return it->second;
 	GroundTexture &tex = this->box_textures[key];
@@ -703,7 +737,7 @@ const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal)
 	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, {0, 0, 0});
 	std::vector<float> alpha(pic.pixels.size(), 0.0f);
 	PaintSprite(pic, alpha, raw, pal, 0, 0, false);
-	FinishTexture(tex, std::move(alpha), 4, true);
+	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, widen);
 	return tex;
 }
 
@@ -978,7 +1012,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 		smooth = {2 * TRACK_SMOOTH_LENGTH, (1 - climb) * TRACK_SMOOTH_LENGTH};
 	}
 
-	bool boxes = dist <= BOX_DIST && HasBoxes(tile);
+	bool boxes = dist <= BOX_DIST;
 	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z, boxes, smooth);
 	float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
 	float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
@@ -1026,16 +1060,180 @@ void Renderer::AddTile(TileIndex tile, float dist)
 
 	this->AddTrack(tile, corner_z, split_we, dist);
 	if (boxes) {
-		for (const BoxSpriteToDraw &box : this->box_sprites) this->AddBox(box, z);
+		for (const BoxSpriteToDraw &box : this->box_sprites) {
+			switch (GetTileType(tile)) {
+				case MP_TREES:
+					this->AddBillboard(box);
+					break;
+
+				case MP_CLEAR:
+					/* Fences around fields; their boxes are the whole tile. */
+					break;
+
+				case MP_HOUSE:
+				case MP_INDUSTRY:
+				case MP_OBJECT:
+					if (!box.child) this->AddBuilding(box, BUILDING_HEIGHT);
+					break;
+
+				default:
+					if (box.child) break;
+					/* Fences along the edges of the tile don't map well onto their thin boxes; leave them out. */
+					if (std::min(box.xmax - box.xmin, box.ymax - box.ymin) == 0 && std::max(box.xmax - box.xmin, box.ymax - box.ymin) >= 8) break;
+					/* Thin things like signals and lamps stand as cut-outs. */
+					if (box.xmax - box.xmin < 2 && box.ymax - box.ymin < 2) {
+						this->AddBillboard(box);
+					} else {
+						this->AddBox(box, z, 1.0f);
+					}
+					break;
+			}
+		}
 	}
+}
+
+/**
+ * Add a flat side of a thing dressed in its sprite, see #Placement.
+ * @param tex The texture of the sprite.
+ * @param pl Where the thing is.
+ * @param pts The corners of the side, in the coordinates of the sprite, in order around it.
+ * @param normal Direction the side faces, in the coordinates of the sprite; sides facing away from the camera are left out.
+ * @param shown Where on the thing the picture of a point of the side is: the point itself for sides the isometric
+ *              view shows, the matching point of the opposite side for the others.
+ * @param cutout Whether pixels where the sprite is transparent are left out.
+ */
+void Renderer::AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout)
+{
+	std::array<Vec3, 4> world;
+	for (size_t i = 0; i < pts.size(); i++) world[i] = pl.ToWorld(pts[i]);
+	/* Scaling the heights tilts slanted sides; take the normal from the corners, facing the way it should. */
+	Vec3 n = (world[1] - world[0]).Cross(world[2] - world[0]);
+	Vec3 want = pl.Turn(normal);
+	if (n.Dot(want) < 0) n = n * -1;
+	if (n.Dot(n) == 0) return;
+	if ((this->cam.pos - world[0]).Dot(n) <= 0) return;
+	n = n.Normalised();
+
+	std::array<ClipVertex, 4> v;
+	for (size_t i = 0; i < pts.size(); i++) {
+		Vec3 m = shown(pts[i]);
+		v[i].c = this->cam.ToCamera(world[i]);
+		v[i].a[0] = 2.0f * (m.y - m.x) - pl.sx;
+		v[i].a[1] = (m.x + m.y - m.z) - pl.sy;
+		/* The fine pattern runs along the side. */
+		if (std::abs(n.z) > 0.7f) {
+			v[i].a[2] = world[i].x;
+			v[i].a[3] = world[i].y;
+		} else {
+			v[i].a[2] = world[i].y * n.x - world[i].x * n.y;
+			v[i].a[3] = world[i].z;
+		}
+	}
+	Paint paint = {&tex, {}, Shade(n), 0, 1.0f, cutout};
+	for (size_t i = 1; i + 1 < pts.size(); i++) this->AddTriangle({v[0], v[i], v[i + 1]}, paint);
+}
+
+/**
+ * Add a box dressed in a sprite, see #Placement. The sides the isometric view does not show get the picture
+ * of the opposite side; where the sprite is transparent, the box is too.
+ * @param tex The texture of the sprite.
+ * @param pl Where the box is.
+ * @param lo Lowest corner of the box, in the coordinates of the sprite.
+ * @param hi Highest corner of the box, in the coordinates of the sprite.
+ * @param bottom Whether to add the bottom of the box.
+ * @param top Whether to add the top of the box.
+ * @param cutout Whether pixels where the sprite is transparent are left out.
+ */
+void Renderer::AddSpriteBox(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, bool bottom, bool top, bool cutout)
+{
+	const float x0 = lo.x, y0 = lo.y, z0 = lo.z, x1 = hi.x, y1 = hi.y, z1 = hi.z;
+	auto same = [](const Vec3 &p) { return p; };
+	if (top) {
+		std::array<Vec3, 4> q = {Vec3{x0, y0, z1}, Vec3{x1, y0, z1}, Vec3{x1, y1, z1}, Vec3{x0, y1, z1}};
+		this->AddSpriteFace(tex, pl, q, {0, 0, 1}, same, cutout);
+	}
+	if (bottom) {
+		std::array<Vec3, 4> q = {Vec3{x0, y0, z0}, Vec3{x1, y0, z0}, Vec3{x1, y1, z0}, Vec3{x0, y1, z0}};
+		this->AddSpriteFace(tex, pl, q, {0, 0, -1}, [z1](Vec3 p) { p.z = z1; return p; }, cutout);
+	}
+
+	/* The bottom edge of a side is a line of steps of pixels in the sprite, which would cut teeth into it.
+	 * The lowest band of the side gets the picture just above it, stretched down. */
+	const float band = std::min(2.0f, (z1 - z0) / 3);
+	auto wall = [&](float ax, float ay, float bx, float by, const Vec3 &normal, auto mirror) {
+		std::array<Vec3, 4> upper = {Vec3{ax, ay, z0 + band}, Vec3{bx, by, z0 + band}, Vec3{bx, by, z1}, Vec3{ax, ay, z1}};
+		this->AddSpriteFace(tex, pl, upper, normal, mirror, cutout);
+		if (band <= 0) return;
+		std::array<Vec3, 4> lower = {Vec3{ax, ay, z0}, Vec3{bx, by, z0}, Vec3{bx, by, z0 + band}, Vec3{ax, ay, z0 + band}};
+		this->AddSpriteFace(tex, pl, lower, normal, [&](Vec3 p) { p.z = z0 + band; return mirror(p); }, cutout);
+	};
+	wall(x1, y0, x1, y1, {1, 0, 0}, same);
+	wall(x0, y0, x0, y1, {-1, 0, 0}, [x1](Vec3 p) { p.x = x1; return p; });
+	wall(x0, y1, x1, y1, {0, 1, 0}, same);
+	wall(x0, y0, x1, y0, {0, -1, 0}, [y1](Vec3 p) { p.y = y1; return p; });
+}
+
+/**
+ * Get the topmost opaque pixel of a column of a texture.
+ * @param tex The texture.
+ * @param col The column, relative to where the sprite is drawn.
+ * @return The row of the top of that pixel, relative to where the sprite is drawn; nothing when the column is empty.
+ */
+static std::optional<int> TopRow(const GroundTexture &tex, float col)
+{
+	const Picture &pic = tex.levels[0];
+	int x = static_cast<int>(std::floor(col)) - tex.left;
+	if (pic.alpha.empty() || x < 0 || x >= pic.width) return std::nullopt;
+	for (int y = 0; y < pic.height; y++) {
+		if (pic.alpha[static_cast<size_t>(y) * pic.width + x] >= 0.5f) return y + tex.top;
+	}
+	return std::nullopt;
+}
+
+/**
+ * Get the topmost opaque pixel of a texture.
+ * @param tex The texture.
+ * @return The row of the top of that pixel, relative to where the sprite is drawn; nothing when there is none.
+ */
+static std::optional<int> TopRow(const GroundTexture &tex)
+{
+	const Picture &pic = tex.levels[0];
+	for (size_t i = 0; i < pic.alpha.size(); i++) {
+		if (pic.alpha[i] >= 0.5f) return static_cast<int>(i / pic.width) + tex.top;
+	}
+	return std::nullopt;
 }
 
 /**
  * Add a thing standing on a tile as the box the viewport sorts it by, with its sprite on the sides.
  * @param box The sprite and its box.
  * @param ground_z Height of the ground of the tile it stands on.
+ * @param height_scale How much the heights of the box are scaled, see #BUILDING_HEIGHT.
  */
-void Renderer::AddBox(const BoxSpriteToDraw &box, int ground_z)
+void Renderer::AddBox(const BoxSpriteToDraw &box, int ground_z, float height_scale)
+{
+	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal);
+	if (tex.levels[0].alpha.empty()) return;
+
+	Placement pl;
+	pl.base = static_cast<float>(box.zmin);
+	pl.height_scale = height_scale;
+	pl.sx = static_cast<float>(box.x) / ZOOM_BASE;
+	pl.sy = static_cast<float>(box.y) / ZOOM_BASE;
+	Vec3 lo = {static_cast<float>(box.xmin), static_cast<float>(box.ymin), static_cast<float>(box.zmin)};
+	Vec3 hi = {static_cast<float>(box.xmax + 1), static_cast<float>(box.ymax + 1), static_cast<float>(box.zmax + 1)};
+	this->AddSpriteBox(tex, pl, lo, hi, box.zmin > ground_z, true);
+}
+
+/**
+ * Add a building as a real 3D shape: walls up to the eaves, and a roof up to the top of its sprite.
+ * The heights come from the sprite: the eaves from the top of its west and east corner, the top of the
+ * roof from the top of the sprite. Every point of the walls and the roof gets the pixel the game draws
+ * there, so the painted roof lands on the roof.
+ * @param box The sprite and its box.
+ * @param height_scale How much the heights are scaled, see #BUILDING_HEIGHT.
+ */
+void Renderer::AddBuilding(const BoxSpriteToDraw &box, float height_scale)
 {
 	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal);
 	if (tex.levels[0].alpha.empty()) return;
@@ -1043,43 +1241,155 @@ void Renderer::AddBox(const BoxSpriteToDraw &box, int ground_z)
 	const float x0 = static_cast<float>(box.xmin), x1 = static_cast<float>(box.xmax + 1);
 	const float y0 = static_cast<float>(box.ymin), y1 = static_cast<float>(box.ymax + 1);
 	const float z0 = static_cast<float>(box.zmin), z1 = static_cast<float>(box.zmax + 1);
-	/* Where the viewport would draw the sprite, in normal zoom screen pixels. */
-	const float sx = static_cast<float>(box.x) / ZOOM_BASE;
-	const float sy = static_cast<float>(box.y) / ZOOM_BASE;
+	Placement pl;
+	pl.base = z0;
+	pl.height_scale = height_scale;
+	pl.sx = static_cast<float>(box.x) / ZOOM_BASE;
+	pl.sy = static_cast<float>(box.y) / ZOOM_BASE;
 
-	/* A side the isometric view does not show gets the picture of the opposite side: the point on the side is
-	 * moved there before it is projected into the sprite. The fine pattern runs along the side. */
-	enum Side : uint8_t { TOP, BOTTOM, X_HIGH, X_LOW, Y_HIGH, Y_LOW };
-	auto add_side = [&](Side side, const std::array<Vec3, 4> &quad, const Vec3 &normal) {
-		/* Leave out sides facing away from the camera. */
-		if ((this->cam.pos - quad[0]).Dot(normal) <= 0) return;
-		std::array<ClipVertex, 4> v;
-		for (int i = 0; i < 4; i++) {
-			Vec3 p = quad[i];
-			Vec3 m = p;
-			if (side == BOTTOM) m.z = z1;
-			if (side == X_LOW) m.x = x1;
-			if (side == Y_LOW) m.y = y1;
-			v[i].c = this->cam.ToCamera(p);
-			v[i].a[0] = 2.0f * (m.y - m.x) - sx;
-			v[i].a[1] = (m.x + m.y - m.z) - sy;
-			switch (side) {
-				case TOP: case BOTTOM: v[i].a[2] = p.x; v[i].a[3] = p.y; break;
-				case X_HIGH: case X_LOW: v[i].a[2] = p.y; v[i].a[3] = p.z; break;
-				default: v[i].a[2] = p.x; v[i].a[3] = p.z; break;
-			}
-		}
-		Paint paint = {&tex, {}, Shade(normal), 0, 1.0f, true};
-		this->AddTriangle({v[0], v[1], v[2]}, paint);
-		this->AddTriangle({v[0], v[2], v[3]}, paint);
+	/* Height of the top of the sprite on the vertical line through a point of the ground. */
+	auto top_at = [&](float px, float py) -> std::optional<float> {
+		std::optional<int> row = TopRow(tex, 2 * (py - px) - pl.sx);
+		if (!row.has_value()) return std::nullopt;
+		return px + py - pl.sy - *row;
 	};
+	/* The outermost columns of the sprite are the west and east corners of the building. */
+	std::optional<float> west = top_at(x1 - 0.25f, y0 + 0.25f);
+	std::optional<float> east = top_at(x0 + 0.25f, y1 - 0.25f);
+	float eave = z1;
+	if (west.has_value() && east.has_value()) eave = std::min(*west, *east);
+	if (eave < z0 + 2) eave = z1;
 
-	add_side(TOP, {Vec3{x0, y0, z1}, Vec3{x1, y0, z1}, Vec3{x1, y1, z1}, Vec3{x0, y1, z1}}, {0, 0, 1});
-	if (z0 > ground_z) add_side(BOTTOM, {Vec3{x0, y0, z0}, Vec3{x1, y0, z0}, Vec3{x1, y1, z0}, Vec3{x0, y1, z0}}, {0, 0, -1});
-	add_side(X_HIGH, {Vec3{x1, y0, z0}, Vec3{x1, y1, z0}, Vec3{x1, y1, z1}, Vec3{x1, y0, z1}}, {1, 0, 0});
-	add_side(X_LOW, {Vec3{x0, y0, z0}, Vec3{x0, y1, z0}, Vec3{x0, y1, z1}, Vec3{x0, y0, z1}}, {-1, 0, 0});
-	add_side(Y_HIGH, {Vec3{x0, y1, z0}, Vec3{x1, y1, z0}, Vec3{x1, y1, z1}, Vec3{x0, y1, z1}}, {0, 1, 0});
-	add_side(Y_LOW, {Vec3{x0, y0, z0}, Vec3{x1, y0, z0}, Vec3{x1, y0, z1}, Vec3{x0, y0, z1}}, {0, -1, 0});
+	/* When the sprite reaches above the north corner at the height of the eaves, there is a roof. Its top
+	 * is in the middle of the building, at the height that puts it at the top of the sprite. */
+	float ridge = eave;
+	std::optional<int> top = TopRow(tex);
+	if (top.has_value()) {
+		float north_row = x0 + y0 - eave - pl.sy;
+		float apex = (x0 + x1 + y0 + y1) / 2 - pl.sy - *top;
+		if (*top < north_row - MIN_ROOF_HEIGHT / 2 && apex >= eave + MIN_ROOF_HEIGHT) {
+			ridge = std::min(apex, eave + 2 * std::max(x1 - x0, y1 - y0));
+		}
+	}
+
+	this->AddSpriteBox(tex, pl, {x0, y0, z0}, {x1, y1, eave}, false, false);
+	if (ridge <= eave) {
+		std::array<Vec3, 4> q = {Vec3{x0, y0, eave}, Vec3{x1, y0, eave}, Vec3{x1, y1, eave}, Vec3{x0, y1, eave}};
+		this->AddSpriteFace(tex, pl, q, {0, 0, 1}, [](const Vec3 &p) { return p; }, true);
+	}
+	if (ridge <= eave) return;
+
+	/* Hip roof, with its ridge along the longer side of the building; a pyramid on a square one. */
+	const float xc = (x0 + x1) / 2, yc = (y0 + y1) / 2;
+	auto same = [](const Vec3 &p) { return p; };
+	auto mirror_x = [xc](Vec3 p) { p.x = 2 * xc - p.x; return p; };
+	auto mirror_y = [yc](Vec3 p) { p.y = 2 * yc - p.y; return p; };
+	if (x1 - x0 >= y1 - y0) {
+		float half = (y1 - y0) / 2;
+		Vec3 r0 = {x0 + half, yc, ridge}, r1 = {x1 - half, yc, ridge};
+		std::array<Vec3, 4> south = {Vec3{x1, y1, eave}, Vec3{x0, y1, eave}, r0, r1};
+		std::array<Vec3, 4> north = {Vec3{x0, y0, eave}, Vec3{x1, y0, eave}, r1, r0};
+		std::array<Vec3, 3> west_end = {Vec3{x1, y0, eave}, Vec3{x1, y1, eave}, r1};
+		std::array<Vec3, 3> east_end = {Vec3{x0, y1, eave}, Vec3{x0, y0, eave}, r0};
+		this->AddSpriteFace(tex, pl, south, {0, 1, 1}, same, false);
+		this->AddSpriteFace(tex, pl, north, {0, -1, 1}, mirror_y, false);
+		this->AddSpriteFace(tex, pl, west_end, {1, 0, 1}, same, false);
+		this->AddSpriteFace(tex, pl, east_end, {-1, 0, 1}, mirror_x, false);
+	} else {
+		float half = (x1 - x0) / 2;
+		Vec3 r0 = {xc, y0 + half, ridge}, r1 = {xc, y1 - half, ridge};
+		std::array<Vec3, 4> south = {Vec3{x1, y0, eave}, Vec3{x1, y1, eave}, r1, r0};
+		std::array<Vec3, 4> north = {Vec3{x0, y1, eave}, Vec3{x0, y0, eave}, r0, r1};
+		std::array<Vec3, 3> east_end = {Vec3{x1, y1, eave}, Vec3{x0, y1, eave}, r1};
+		std::array<Vec3, 3> west_end = {Vec3{x0, y0, eave}, Vec3{x1, y0, eave}, r0};
+		this->AddSpriteFace(tex, pl, south, {1, 0, 1}, same, false);
+		this->AddSpriteFace(tex, pl, north, {-1, 0, 1}, mirror_x, false);
+		this->AddSpriteFace(tex, pl, east_end, {0, 1, 1}, same, false);
+		this->AddSpriteFace(tex, pl, west_end, {0, -1, 1}, mirror_y, false);
+	}
+}
+
+/**
+ * Add a thing standing on a tile as a cut-out facing the camera, like trees and signals.
+ * @param box The sprite and its box.
+ */
+void Renderer::AddBillboard(const BoxSpriteToDraw &box)
+{
+	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal, false);
+	const Picture &pic = tex.levels[0];
+	if (pic.alpha.empty()) return;
+
+	/* The point on the ground where the viewport draws the sprite. */
+	float sx = static_cast<float>(box.x) / ZOOM_BASE;
+	float sy = static_cast<float>(box.y) / ZOOM_BASE;
+	float z = static_cast<float>(box.zmin);
+	Vec3 base = {(sy + z - sx / 2) / 2, (sy + z + sx / 2) / 2, z};
+
+	/* Texture coordinates are pixels relative to where the sprite is drawn. */
+	float left = static_cast<float>(tex.left), right = static_cast<float>(tex.left + pic.width);
+	float top = static_cast<float>(tex.top), bottom = static_cast<float>(tex.top + pic.height);
+	auto corner = [&](float col, float row) {
+		ClipVertex v;
+		Vec3 p = base + this->cam.right * (col * CUTOUT_UNITS) + Vec3{0, 0, -row * CUTOUT_UNITS};
+		v.c = this->cam.ToCamera(p);
+		v.a = {col, row, col * CUTOUT_UNITS, row * CUTOUT_UNITS};
+		return v;
+	};
+	std::array<ClipVertex, 4> v = {corner(left, top), corner(right, top), corner(right, bottom), corner(left, bottom)};
+	Paint paint = {&tex, {}, 1.0f, 0, 1.0f, true};
+	this->AddTriangle({v[0], v[1], v[2]}, paint);
+	this->AddTriangle({v[0], v[2], v[3]}, paint);
+}
+
+/** Add the trains and road vehicles around the camera, as boxes dressed in their sprites. */
+void Renderer::AddVehicles()
+{
+	/* Direction each way a vehicle can face goes to, in world coordinates. */
+	static const std::array<std::pair<float, float>, DIR_END> headings = {{
+		{-1, -1}, {-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {1, -1}, {0, -1},
+	}};
+
+	for (const Vehicle *v : Vehicle::Iterate()) {
+		if (v->type != VEH_TRAIN && v->type != VEH_ROAD) continue;
+		if (v->vehstatus.Test(VehState::Hidden)) continue;
+		float dx = v->x_pos - this->cam.pos.x;
+		float dy = v->y_pos - this->cam.pos.y;
+		if (std::hypot(dx, dy) > BOX_DIST) continue;
+		if (dx * this->cam.fwd.x + dy * this->cam.fwd.y < -2 * TILE) continue;
+
+		/* The sprite of the vehicle going to the south west, along the x axis. */
+		VehicleSpriteSeq seq;
+		v->GetImage(DIR_SW, EIT_ON_MAP, &seq);
+		if (!seq.IsValid()) continue;
+		PaletteID pal = seq.seq[0].pal != 0 ? seq.seq[0].pal : GetVehiclePalette(v);
+		const GroundTexture &tex = this->GetBoxTexture(seq.seq[0].sprite, pal);
+		const Picture &pic = tex.levels[0];
+		if (pic.alpha.empty()) continue;
+		std::optional<int> top = TopRow(tex);
+		if (!top.has_value()) continue;
+
+		/* The box: its length from the game, its width and height from the sprite, which is 2 (length + width) wide. */
+		uint8_t veh_length = (v->type == VEH_TRAIN) ? Train::From(v)->gcache.cached_veh_length : RoadVehicle::From(v)->gcache.cached_veh_length;
+		float length = static_cast<float>(veh_length);
+		float width = std::clamp(pic.width / 2.0f - length, 1.5f, std::max(length, 1.5f));
+		float height = std::clamp(-*top - (length + width) / 2, 2.0f, 40.0f);
+
+		auto [hx, hy] = headings[v->direction];
+		float angle = std::atan2(hy, hx);
+		Placement pl;
+		pl.origin = {static_cast<float>(v->x_pos), static_cast<float>(v->y_pos), static_cast<float>(v->z_pos)};
+		pl.cos = std::cos(angle);
+		pl.sin = std::sin(angle);
+		pl.height_scale = BUILDING_HEIGHT;
+
+		/* Leave out the vehicle the camera is on. */
+		Vec3 d = this->cam.pos - pl.origin;
+		float along = d.x * pl.cos + d.y * pl.sin;
+		float across = -d.x * pl.sin + d.y * pl.cos;
+		if (std::abs(along) <= length / 2 + 1 && std::abs(across) <= width / 2 + 1) continue;
+
+		this->AddSpriteBox(tex, pl, {-length / 2, -width / 2, 0}, {length / 2, width / 2, height}, false, true);
+	}
 }
 
 /**
@@ -1333,6 +1643,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	std::sort(visible.begin(), visible.end());
 	this->triangles.clear();
 	for (const auto &[dist, tile] : visible) this->AddTile(tile, dist);
+	this->AddVehicles();
 
 	/* Fill the triangles in stripes of rows, on several threads. */
 	auto prepared = std::chrono::steady_clock::now();

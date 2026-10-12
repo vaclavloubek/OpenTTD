@@ -84,6 +84,22 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   „do kopce“), silnice jen jako textura země. Pravoúhlé zatáčky jsou ve hře velmi ostré, takže v nich kolej na
   okamžik zmizí ze záběru; svahy jsou strmé (50 %) stejně jako ve hře.
 
+### 3D pohled – krok 4 (rozpracováno)
+
+- **Domy, průmysl a objekty** jsou skutečné 3D tvary: stěny do výšky okapu a valbová střecha (u čtvercových domů
+  jehlan) až k vršku spritu. Výška okapu se čte ze spritu (vršek západního a východního rohu), vršek střechy z vršku
+  spritu; každý bod stěny i střechy dostane pixel, který tam kreslí hra, takže namalovaná střecha leží na střeše.
+  Výšky jsou 0,6× výšky ve spritu (izometrie budovy převyšuje), jako v návrhu C. Nejnižší pás stěny bere obrázek
+  těsně nad ním, aby spodní hrana nebyla zubatá ze schodů pixelů.
+- **Stromy a návěstidla** (a jiné tenké věci) jsou výřezy otočené ke kameře (0,28 jednotky na pixel spritu),
+  bez rozšiřování neprůhledné oblasti, aby zůstaly štíhlé.
+- **Ostatní vlaky a silniční vozidla** jsou kvádry podél směru jízdy, potažené spritem vozidla jedoucího na
+  jihozápad (délka z hry, šířka a výška ze spritu). Vozidlo, na kterém je kamera, se vynechává.
+- Budovy, stromy, návěstidla a vozidla se kreslí do 32 dlaždic. Ploty polí a ploty podél kolejí se zatím
+  vynechávají (na tenké kvádry se jejich sprity nepromítají dobře).
+- Testovací AI staví dvě dvojitá návěstidla na trati a vedle ní druhou rovnou trať s vlakem.
+- Zbývá: mosty a portály tunelů v detailu, silnice, zkouška na Macu.
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt

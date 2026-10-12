@@ -241,6 +241,37 @@ function CabTestAI::Start()
 	this.Must(AIVehicle.StartStopVehicle(train), "start");
 	AILog.Info("TRAIN " + train + " depot=" + tDepot + " A=" + tA + " B=" + tB);
 
+	/* Signals along the line, to see them in the 3D view. */
+	foreach (x in [x0 + 8, x0 + 14]) {
+		local t = AIMap.GetTileIndex(x, y0);
+		if (!AIRail.BuildSignal(t, AIMap.GetTileIndex(x - 1, y0), AIRail.SIGNALTYPE_NORMAL_TWOWAY)) AILog.Warning("signal at " + x + " failed");
+	}
+
+	/* A second, straight line next to the first, so another train passes by in the 3D view. */
+	local ys = y0 - 3;
+	local okline = AIRail.BuildRailStation(AIMap.GetTileIndex(x0, ys), AIRail.RAILTRACK_NE_SW, 1, 4, AIStation.STATION_NEW);
+	for (local x = x0 + 4; okline && x < x1 - 4; x++) okline = AIRail.BuildRailTrack(AIMap.GetTileIndex(x, ys), AIRail.RAILTRACK_NE_SW);
+	okline = okline && AIRail.BuildRailStation(AIMap.GetTileIndex(x1 - 4, ys), AIRail.RAILTRACK_NE_SW, 1, 4, AIStation.STATION_NEW);
+	okline = okline && AIRail.BuildRailDepot(AIMap.GetTileIndex(x0 - 1, ys), AIMap.GetTileIndex(x0, ys));
+	if (okline) {
+		local depot2 = AIMap.GetTileIndex(x0 - 1, ys);
+		local train2 = AIVehicle.BuildVehicle(depot2, loco);
+		if (AIVehicle.IsValidVehicle(train2)) {
+			if (!wagons.IsEmpty()) {
+				for (local i = 0; i < 2; i++) {
+					local w = AIVehicle.BuildVehicle(depot2, wagons.Begin());
+					if (AIVehicle.IsValidVehicle(w)) AIVehicle.MoveWagon(w, 0, train2, AIVehicle.GetNumWagons(train2) - 1);
+				}
+			}
+			AIOrder.AppendOrder(train2, AIMap.GetTileIndex(x1 - 4, ys), AIOrder.OF_NONE);
+			AIOrder.AppendOrder(train2, AIMap.GetTileIndex(x0, ys), AIOrder.OF_NONE);
+			AIVehicle.StartStopVehicle(train2);
+			AILog.Info("TRAIN2 " + train2);
+		}
+	} else {
+		AILog.Warning("second line failed");
+	}
+
 	/* Other vehicle types, to try the cab view with. */
 	local bus = this.BuildBus(x0, y0, pass);
 	this.BuildShip(x0, y0);
