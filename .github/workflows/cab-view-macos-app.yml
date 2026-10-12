@@ -63,7 +63,7 @@ jobs:
         APP=$(echo _CPack_Packages/*/Bundle/openttd-*/OpenTTD.app)
 
         echo "::group::Add OpenGFX"
-        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        curl -fL https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip -o opengfx-all.zip
         unzip opengfx-all.zip -d opengfx
         mkdir -p "${APP}/Contents/Resources/baseset"
         cp opengfx/*.tar "${APP}/Contents/Resources/baseset/"
