@@ -4555,6 +4555,7 @@ STR_VEHICLE_VIEW_TRAIN_IGNORE_SIGNAL_TOOLTIP                    :{BLACK}Donuť v
 STR_VEHICLE_VIEW_TRAIN_REVERSE_TOOLTIP                          :{BLACK}Otočit vlak
 STR_VEHICLE_VIEW_ROAD_VEHICLE_REVERSE_TOOLTIP                   :{BLACK}Otoč vozidlo
 STR_VEHICLE_VIEW_ORDER_LOCATION_TOOLTIP                         :{BLACK}Vycentrovat hlavní zobrazení na cíl objednávky. Ctrl+Klik pro otevření nového zobrazení na umístění cíle pokynu.
+STR_VEHICLE_VIEW_CAB_VIEW_TOOLTIP                               :{BLACK}Otevřít pohled z kabiny: velké okno, které jede s vozidlem a dívá se dopředu ve směru jízdy
 
 ###length VEHICLE_TYPES
 STR_VEHICLE_VIEW_TRAIN_REFIT_TOOLTIP                            :{BLACK}Přestavět vlak pro převoz jiného typu nákladu
@@ -4607,6 +4608,25 @@ STR_VEHICLE_STATUS_CANNOT_REACH_DEPOT_SERVICE_VEL               :{LTBLUE}Nelze d
 # Vehicle stopped/started animations
 STR_VEHICLE_COMMAND_STOPPED                                     :{RED}Zastaveno
 STR_VEHICLE_COMMAND_STARTED                                     :{GREEN}Puštěno
+
+# Cab view
+STR_CAB_VIEW_CAPTION                                            :{WHITE}Kabina: {VEHICLE}
+STR_CAB_VIEW_LOOK_AHEAD                                         :{BLACK}Výhled vpřed
+STR_CAB_VIEW_LOOK_AHEAD_TOOLTIP                                 :{BLACK}Přepnout mezi výhledem dopředu ve směru jízdy a vozidlem uprostřed pohledu
+STR_CAB_VIEW_START                                              :{BLACK}Rozjet
+STR_CAB_VIEW_STOP                                               :{BLACK}Zastavit
+STR_CAB_VIEW_START_STOP_TOOLTIP                                 :{BLACK}Rozjet nebo zastavit vozidlo
+STR_CAB_VIEW_SPEED                                              :{WHITE}{VELOCITY}
+STR_CAB_VIEW_MAX_SPEED                                          :{SILVER}max. {VELOCITY}
+STR_CAB_VIEW_NEXT_STATION                                       :{SILVER}Další zastávka: {WHITE}{STATION}
+STR_CAB_VIEW_AT_STATION                                         :{SILVER}Stanice: {WHITE}{STATION}
+STR_CAB_VIEW_NEXT_WAYPOINT                                      :{SILVER}Přes: {WHITE}{WAYPOINT}
+STR_CAB_VIEW_NEXT_DEPOT                                         :{SILVER}Cíl: {WHITE}{DEPOT}
+STR_CAB_VIEW_NO_DESTINATION                                     :{SILVER}Bez cíle
+STR_CAB_VIEW_STATE_RUNNING                                      :{GREEN}V jízdě
+STR_CAB_VIEW_STATE_STANDING                                     :{ORANGE}Stojí
+STR_CAB_VIEW_LOAD                                               :{SILVER}Naloženo: {WHITE}{NUM} %
+STR_CAB_VIEW_LOAD_NONE                                          :{SILVER}Naloženo: {WHITE}–
 
 # Vehicle details
 STR_VEHICLE_DETAILS_CAPTION                                     :{WHITE}{VEHICLE} (Detaily)

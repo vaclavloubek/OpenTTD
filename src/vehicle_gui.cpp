@@ -1589,6 +1589,7 @@ static inline void ChangeVehicleWindow(WindowClass window_class, VehicleID from_
 void ChangeVehicleViewWindow(VehicleID from_index, VehicleID to_index)
 {
 	ChangeVehicleWindow(WC_VEHICLE_VIEW,      from_index, to_index);
+	ChangeVehicleWindow(WC_VEHICLE_CAB_VIEW,  from_index, to_index);
 	ChangeVehicleWindow(WC_VEHICLE_ORDERS,    from_index, to_index);
 	ChangeVehicleWindow(WC_VEHICLE_REFIT,     from_index, to_index);
 	ChangeVehicleWindow(WC_VEHICLE_DETAILS,   from_index, to_index);
@@ -2854,6 +2855,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_vehicle_view_widgets
 			EndContainer(),
 			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VV_SHOW_ORDERS), SetMinimalSize(18, 18), SetSpriteTip(SPR_SHOW_ORDERS),
 			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VV_SHOW_DETAILS), SetMinimalSize(18, 18), SetSpriteTip(SPR_SHOW_VEHICLE_DETAILS),
+			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VV_CAB_VIEW), SetMinimalSize(18, 18), SetSpriteTip(SPR_CENTRE_VIEW_VEHICLE, STR_VEHICLE_VIEW_CAB_VIEW_TOOLTIP),
 			NWidget(WWT_PANEL, COLOUR_GREY), SetMinimalSize(18, 0), SetResize(0, 1), EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -3280,6 +3282,9 @@ public:
 				} else {
 					ShowVehicleDetailsWindow(v);
 				}
+				break;
+			case WID_VV_CAB_VIEW: // ride along in the cab
+				ShowCabViewWindow(v);
 				break;
 			case WID_VV_CLONE: // clone vehicle
 				/* Suppress the vehicle GUI when share-cloning.

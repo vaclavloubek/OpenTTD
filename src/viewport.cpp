@@ -1992,6 +1992,8 @@ void UpdateViewportPosition(Window *w, uint32_t delta_ms)
 	if (vp.follow_vehicle != VehicleID::Invalid()) {
 		const Vehicle *veh = Vehicle::Get(vp.follow_vehicle);
 		Point pt = MapXYZToViewport(vp, veh->x_pos, veh->y_pos, veh->z_pos);
+		pt.x += vp.follow_offset_x;
+		pt.y += vp.follow_offset_y;
 
 		vp.scrollpos_x = pt.x;
 		vp.scrollpos_y = pt.y;

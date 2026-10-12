@@ -93,6 +93,7 @@ add_files(
     bridge_map.h
     bridge_type.h
     build_vehicle_gui.cpp
+    cab_view_gui.cpp
     cachecheck.cpp
     cargo_type.h
     cargoaction.cpp

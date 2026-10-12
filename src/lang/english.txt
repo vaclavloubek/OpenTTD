@@ -4459,6 +4459,7 @@ STR_VEHICLE_VIEW_TRAIN_IGNORE_SIGNAL_TOOLTIP                    :{BLACK}Force tr
 STR_VEHICLE_VIEW_TRAIN_REVERSE_TOOLTIP                          :{BLACK}Reverse direction of train
 STR_VEHICLE_VIEW_ROAD_VEHICLE_REVERSE_TOOLTIP                   :{BLACK}Force vehicle to turn around
 STR_VEHICLE_VIEW_ORDER_LOCATION_TOOLTIP                         :{BLACK}Centre main view on order destination. Ctrl+Click to open a new viewport on the order destination's location
+STR_VEHICLE_VIEW_CAB_VIEW_TOOLTIP                               :{BLACK}Open the cab view: a large view that rides along with the vehicle and looks ahead in the direction of travel
 
 ###length VEHICLE_TYPES
 STR_VEHICLE_VIEW_TRAIN_REFIT_TOOLTIP                            :{BLACK}Refit train to carry a different cargo type
@@ -4511,6 +4512,25 @@ STR_VEHICLE_STATUS_CANNOT_REACH_DEPOT_SERVICE_VEL               :{LTBLUE}{1:VELO
 # Vehicle stopped/started animations
 STR_VEHICLE_COMMAND_STOPPED                                     :{RED}Stopped
 STR_VEHICLE_COMMAND_STARTED                                     :{GREEN}Started
+
+# Cab view
+STR_CAB_VIEW_CAPTION                                            :{WHITE}Cab view: {VEHICLE}
+STR_CAB_VIEW_LOOK_AHEAD                                         :{BLACK}Look ahead
+STR_CAB_VIEW_LOOK_AHEAD_TOOLTIP                                 :{BLACK}Toggle between looking ahead in the direction of travel and keeping the vehicle in the centre of the view
+STR_CAB_VIEW_START                                              :{BLACK}Start
+STR_CAB_VIEW_STOP                                               :{BLACK}Stop
+STR_CAB_VIEW_START_STOP_TOOLTIP                                 :{BLACK}Start or stop the vehicle
+STR_CAB_VIEW_SPEED                                              :{WHITE}{VELOCITY}
+STR_CAB_VIEW_MAX_SPEED                                          :{SILVER}max. {VELOCITY}
+STR_CAB_VIEW_NEXT_STATION                                       :{SILVER}Next stop: {WHITE}{STATION}
+STR_CAB_VIEW_AT_STATION                                         :{SILVER}Now at: {WHITE}{STATION}
+STR_CAB_VIEW_NEXT_WAYPOINT                                      :{SILVER}Via: {WHITE}{WAYPOINT}
+STR_CAB_VIEW_NEXT_DEPOT                                         :{SILVER}Heading for: {WHITE}{DEPOT}
+STR_CAB_VIEW_NO_DESTINATION                                     :{SILVER}No destination
+STR_CAB_VIEW_STATE_RUNNING                                      :{GREEN}Running
+STR_CAB_VIEW_STATE_STANDING                                     :{ORANGE}Standing
+STR_CAB_VIEW_LOAD                                               :{SILVER}Load: {WHITE}{NUM}%
+STR_CAB_VIEW_LOAD_NONE                                          :{SILVER}Load: {WHITE}-
 
 # Vehicle details
 STR_VEHICLE_DETAILS_CAPTION                                     :{WHITE}{VEHICLE} (Details)

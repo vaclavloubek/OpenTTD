@@ -1348,6 +1348,7 @@ CommandCost CmdMoveRailVehicle(DoCommandFlags flags, VehicleID src_veh, VehicleI
 		if (src == original_src_head && src->IsEngine() && !src->IsFrontEngine()) {
 			/* Cases #2 and #3: the front engine gets trashed. */
 			CloseWindowById(WC_VEHICLE_VIEW, src->index);
+			CloseWindowById(WC_VEHICLE_CAB_VIEW, src->index);
 			CloseWindowById(WC_VEHICLE_ORDERS, src->index);
 			CloseWindowById(WC_VEHICLE_REFIT, src->index);
 			CloseWindowById(WC_VEHICLE_DETAILS, src->index);
