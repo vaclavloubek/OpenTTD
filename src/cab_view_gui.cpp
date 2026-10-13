@@ -17,6 +17,7 @@
 #include "landscape.h"
 #include "bridge_map.h"
 #include "rail_map.h"
+#include "tunnel_map.h"
 #include "pbs.h"
 #include "pathfinder/follow_track.hpp"
 #include "company_func.h"
@@ -67,6 +68,8 @@ static constexpr int CAB_VIEW_DIAL_TICKS = 10;
 static constexpr float CAB_VIEW_DIAL_MAX_SPEED = 0.85f;
 /** Height of the eye of the 3D view above the rails: the windows of the cab, well below the decks of bridges and the tops of tunnels. */
 static constexpr float CAB_VIEW_3D_EYE = 4.0f;
+/** How far the 3D view tilts with the grade of the track: halfway, as ramps and slopes are steep; all the way, it would look into the sky at the top of a ramp. */
+static constexpr float CAB_VIEW_3D_TILT = 0.5f;
 /** Distance (in world coordinates) over which the 3D view turns most of the way into a new direction of travel. */
 static constexpr float CAB_VIEW_3D_TURN_DIST = 6.0f;
 /** Distance (in world coordinates) over which the 3D view follows most of a change in height, which on slopes comes in steps. */
@@ -225,7 +228,9 @@ private:
 		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
 		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
 		float turn = std::remainder(target - this->yaw, 2.0f * static_cast<float>(M_PI));
-		bool dark = v->vehstatus.Test(VehState::Hidden);
+		/* In a tunnel the view goes on along it; there is nothing to see from a depot. */
+		const bool tunnel = IsTileType(v->tile, MP_TUNNELBRIDGE) && IsTunnel(v->tile);
+		const bool dark = v->vehstatus.Test(VehState::Hidden) && !tunnel;
 		/* Jump when starting, when the train reverses, or when it moved too far to follow. */
 		jump |= this->tick_cameras.empty() || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE || dark != this->tick_cameras.back().camera.dark;
 		if (jump) {
@@ -235,8 +240,8 @@ private:
 		}
 
 		CabViewCamera camera;
-		/* Nothing to see from a depot or tunnel. */
 		camera.dark = dark;
+		camera.tunnel = tunnel ? v->tile : INVALID_TILE;
 		camera.yaw = this->yaw;
 		/* The position of a vehicle is its middle; move the camera to the front. */
 		float half_length = Train::From(v)->gcache.cached_veh_length / 2.0f;
@@ -249,6 +254,10 @@ private:
 			this->height += (track - this->height) * (1.0f - std::exp(-moved / CAB_VIEW_3D_CLIMB_DIST));
 		}
 		camera.z = this->height + CAB_VIEW_3D_EYE;
+		/* The view tilts with the track around the front, so on ramps and slopes the track ahead does not rise like a wall. */
+		float ahead = GetTrackHeight(v, camera.x + std::cos(this->yaw) * half_length, camera.y + std::sin(this->yaw) * half_length);
+		float behind = GetTrackHeight(v, x, y);
+		camera.pitch = CAB_VIEW_3D_TILT * std::atan2(ahead - behind, 2 * half_length);
 
 		auto now = std::chrono::steady_clock::now();
 		if (jump) {
@@ -323,6 +332,7 @@ private:
 		camera.y = from.y + (to.y - from.y) * f;
 		camera.z = from.z + (to.z - from.z) * f;
 		camera.yaw = from.yaw + std::remainder(to.yaw - from.yaw, 2.0f * static_cast<float>(M_PI)) * f;
+		camera.pitch = from.pitch + (to.pitch - from.pitch) * f;
 		return camera;
 	}
 

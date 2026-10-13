@@ -59,7 +59,10 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   jen kvádr se střechou namalovanou na stěnách – skutečné tvary budov jsou úkol kroku 4.
 - Opar od 14 dlaždic, dohled 56 dlaždic, obloha s přechodem do oparu.
 - **Kamera** na čele vlaku ve výšce oken kabiny (4 jednotky nad kolejí, asi 2,5 m), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
-  (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu a v tunelu je obraz černý.
+  (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu je obraz černý.
+  Na svahu a nájezdu mostu se pohled naklání se sklonem koleje kolem čela vlaku, ale jen napůl
+  (`CAB_VIEW_3D_TILT`): bez naklonění vypadal strmý nájezd z oken jako zeď, s plným nakloněním kamera na
+  vrcholu nájezdu koukala do nebe.
 - **Plynulost**: vlak se ve hře posouvá po celých krocích (1/16 dlaždice), v 90 km/h jen asi každý třetí herní
   tik, a herní tiky (27 ms) přicházejí jinak než snímky obrazovky, často pozdě nebo po dvou (když kreslení
   trvá dlouho). Kamera proto bere i rozjetý krok (`progress`), pamatuje si posledních 8 tiků a obraz ukazuje
@@ -147,7 +150,10 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - **Tunely**: vjezd je kamenný portál s obloukem, světlým věncem kolem otvoru, tmou uvnitř a opěrnými zdmi
   podél koleje; vrchol oblouku je 7,5 jednotky nad kolejí, pod hranou kopce (8) (dřív byl nad ní a v otvoru byl
   vidět pruh trávy); kopec nad vjezdem se ve 3D neklesá, kolej vede rovně do portálu (`SetTunnelGround`,
-  `AddTunnelPortal`). V tunelu je obraz dál černý.
+  `AddTunnelPortal`). Když je kamera v ose tunelu (v něm nebo na koleji před ním), místo tmy v otvoru je
+  vidět dovnitř: tmavá klenba po 4 jednotkách střídavě tmavší (aby bylo vidět, že ubíhá), kolej a pražce,
+  u obou konců světlejší od denního světla, a protože tunely jsou ve hře rovné, na konci světlý výjezd
+  s krajinou za ním (`AddTunnelInside`). Vlak v tunelu má obraz normální, ne černý.
 - **Přejezdy**: u silnice před a za kolejí stojí čtyři sloupky s bílým křížem a dvěma světly směrem k silnici;
   když hra přejezd zavře, svítí červeně (`AddCrossing`). Silnice jinak zůstávají texturou země.
 - Testovací AI teď navíc staví kopec s tunelem, dva železniční mosty přes silnice, přejezd, silniční most přes

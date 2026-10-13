@@ -115,6 +115,9 @@ constexpr float PORTAL_OPENING = 4.5f; ///< Half the width of the opening of a t
 constexpr float PORTAL_SPRING = 3.0f; ///< Height where the arch of a tunnel portal starts; the top of the arch stays below the hill, which would show in the opening otherwise.
 constexpr float PORTAL_RING = 0.9f; ///< Width of the ring of stones around the opening of a tunnel portal.
 constexpr float PORTAL_DEPTH = 3.0f; ///< How far the walls of the opening of a tunnel go into the darkness.
+constexpr int PORTAL_SEGMENTS = 8; ///< Number of pieces of the arch of a tunnel.
+constexpr float TUNNEL_STEP = 4.0f; ///< Length of the pieces of the vault inside a tunnel; every other one is a bit darker, so the walls are seen to pass by.
+constexpr float TUNNEL_GLOW = 12.0f; ///< Distance from an entrance of a tunnel over which most of the daylight inside it fades.
 
 /** Direction each way something can face goes to, in world coordinates. */
 constexpr std::array<std::pair<float, float>, DIR_END> HEADINGS = {{
@@ -162,6 +165,12 @@ constexpr RGB PORTAL_COLOUR = {124, 114, 100}; ///< Colour of the stone face of 
 constexpr RGB PORTAL_RING_COLOUR = {170, 158, 140}; ///< Colour of the ring of stones around the opening of a tunnel portal.
 constexpr RGB TUNNEL_WALL_COLOUR = {44, 40, 36}; ///< Colour of the walls just inside a tunnel.
 constexpr RGB TUNNEL_DARK = {6, 6, 6}; ///< Colour of the darkness inside a tunnel.
+constexpr RGB TUNNEL_VAULT_LIT = {84, 77, 68}; ///< Colour of the vault inside a tunnel at its entrances, in the daylight.
+constexpr RGB TUNNEL_VAULT_DARK = {18, 17, 15}; ///< Colour of the vault deep inside a tunnel.
+constexpr RGB TUNNEL_FLOOR_LIT = {70, 62, 54}; ///< Colour of the ballast inside a tunnel at its entrances.
+constexpr RGB TUNNEL_FLOOR_DARK = {12, 11, 10}; ///< Colour of the ballast deep inside a tunnel.
+constexpr RGB TUNNEL_RAIL_LIT = {180, 180, 182}; ///< Colour of the rails inside a tunnel at its entrances.
+constexpr RGB TUNNEL_RAIL_DARK = {56, 56, 58}; ///< Colour of the rails deep inside a tunnel, which still catch the light from its ends.
 constexpr RGB AQUEDUCT_COLOUR = {178, 174, 166}; ///< Colour of the stone of aqueducts.
 
 /** A vector in world coordinates. */
@@ -536,6 +545,7 @@ private:
 	RGB Fog(const RGB &colour, float dist) const;
 
 	std::vector<ScreenTriangle> triangles; ///< Triangles of the current picture, nearest first.
+	std::vector<TileIndex> tunnels; ///< Tunnels whose insides are in the current picture, by one of their entrances, see #AddTunnelInside.
 
 	void AddTriangle(const std::array<ClipVertex, 3> &tri, const Paint &paint);
 	void SetupTriangle(const ClipVertex &a, const ClipVertex &b, const ClipVertex &c, const Paint &paint);
@@ -553,6 +563,8 @@ private:
 	void AddBridgeRamp(TileIndex tile, int ground_z, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddAqueductWalls(Axis axis, float a0, std::pair<float, float> across, std::pair<float, float> deck);
 	void AddTunnelPortal(TileIndex tile, int z);
+	bool InLineWithTunnel(TileIndex tile, int z) const;
+	void AddTunnelInside(TileIndex tile, int z);
 	void AddBox(const BoxSpriteToDraw &box, int ground_z, float height_scale);
 	const BuildingShape &GetBuildingShape(const BoxSpriteToDraw &box, bool station);
 	void AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station);
@@ -1168,7 +1180,7 @@ void Renderer::Rasterise(int stripe, int stripes)
 /** Fill the view with the sky, and the haze below the horizon. */
 void Renderer::DrawSky()
 {
-	float horizon = this->cam.cy + this->cam.focal * std::tan(PITCH_DEG * static_cast<float>(M_PI) / 180.0f);
+	float horizon = this->cam.cy + this->cam.focal * this->cam.fwd.z / std::hypot(this->cam.fwd.x, this->cam.fwd.y);
 	for (int y = 0; y < this->height; y++) {
 		RGB colour = HAZE;
 		if (y < horizon) {
@@ -2920,29 +2932,52 @@ void Renderer::AddBridgeRamp(TileIndex tile, int ground_z, const std::array<floa
 }
 
 /**
+ * Get where the face of the portal of a tunnel is, and which way the tunnel goes from it.
+ * @param tile The tunnel entrance.
+ * @param z Height of the bottom of the tile.
+ * @return The middle of the bottom of the face, where the hill starts; the direction into the tunnel; and the direction to its left.
+ */
+static std::tuple<Vec3, Vec3, Vec3> GetTunnelFace(TileIndex tile, int z)
+{
+	static const std::array<std::pair<float, float>, DIAGDIR_END> into = {{{-1, 0}, {0, 1}, {1, 0}, {0, -1}}};
+	const auto [ix, iy] = into[GetTunnelBridgeDirection(tile)];
+	const Vec3 in = {ix, iy, 0};
+	const Vec3 face = Vec3{TileX(tile) * TILE + TILE / 2, TileY(tile) * TILE + TILE / 2, static_cast<float>(z)} + in * (TILE / 2);
+	return {face, in, Vec3{-iy, ix, 0}};
+}
+
+/**
+ * Get a point of the arch over the opening of a tunnel.
+ * @param i Which point, from 0 at one side over the top to #PORTAL_SEGMENTS at the other.
+ * @param radius Radius of the arch.
+ * @return How far the point is to the side of the middle of the track, and how high above it.
+ */
+static std::pair<float, float> GetArchPoint(int i, float radius)
+{
+	const float t = static_cast<float>(M_PI) * i / PORTAL_SEGMENTS;
+	return {-std::cos(t) * radius, PORTAL_SPRING + std::sin(t) * radius};
+}
+
+/**
  * Add the portal of a tunnel where the hill starts: a face of stone with an arched opening into the dark,
  * and walls along the track, where the 3D view cuts the hill away to keep the track level, see SetTunnelGround.
+ * When the camera is in line with the tunnel, the opening shows the inside of the tunnel instead of darkness.
  * @param tile The tunnel entrance.
  * @param z Height of the bottom of the tile.
  */
 void Renderer::AddTunnelPortal(TileIndex tile, int z)
 {
-	static const std::array<std::pair<float, float>, DIAGDIR_END> into = {{{-1, 0}, {0, 1}, {1, 0}, {0, -1}}};
-	const auto [ix, iy] = into[GetTunnelBridgeDirection(tile)];
-	const Vec3 in = {ix, iy, 0};
-	const Vec3 side = {-iy, ix, 0};
-	const Vec3 face = Vec3{TileX(tile) * TILE + TILE / 2, TileY(tile) * TILE + TILE / 2, static_cast<float>(z)} + in * (TILE / 2);
+	const auto [face, in, side] = GetTunnelFace(tile, z);
 	/* A point s to the side and h above the bottom of the portal, d into the hill. */
 	auto at = [&](float s, float h, float d = 0) { return face + side * s + in * d + Vec3{0, 0, h}; };
 	const float half = TILE / 2;
 
 	/* The arch of the opening, from one side over the top to the other, and the ring of stones around it. */
-	constexpr int SEGMENTS = 8;
+	constexpr int SEGMENTS = PORTAL_SEGMENTS;
 	std::array<std::pair<float, float>, SEGMENTS + 1> arch, ring;
 	for (int i = 0; i <= SEGMENTS; i++) {
-		const float t = static_cast<float>(M_PI) * i / SEGMENTS;
-		arch[i] = {-std::cos(t) * PORTAL_OPENING, PORTAL_SPRING + std::sin(t) * PORTAL_OPENING};
-		ring[i] = {-std::cos(t) * (PORTAL_OPENING + PORTAL_RING), PORTAL_SPRING + std::sin(t) * (PORTAL_OPENING + PORTAL_RING)};
+		arch[i] = GetArchPoint(i, PORTAL_OPENING);
+		ring[i] = GetArchPoint(i, PORTAL_OPENING + PORTAL_RING);
 	}
 	const float edge = PORTAL_OPENING + PORTAL_RING;
 
@@ -2961,18 +2996,22 @@ void Renderer::AddTunnelPortal(TileIndex tile, int z)
 		this->AddFlatQuad({at(arch[i].first, arch[i].second), at(ring[i].first, ring[i].second), at(ring[i + 1].first, ring[i + 1].second), at(arch[i + 1].first, arch[i + 1].second)}, PORTAL_RING_COLOUR, 1.0f);
 	}
 
-	/* The walls and floor of the opening, going into the dark. */
-	this->AddFlatQuad({at(-PORTAL_OPENING, 0), at(-PORTAL_OPENING, 0, PORTAL_DEPTH), at(-PORTAL_OPENING, PORTAL_SPRING, PORTAL_DEPTH), at(-PORTAL_OPENING, PORTAL_SPRING)}, TUNNEL_WALL_COLOUR, 1.0f, true);
-	this->AddFlatQuad({at(PORTAL_OPENING, 0), at(PORTAL_OPENING, 0, PORTAL_DEPTH), at(PORTAL_OPENING, PORTAL_SPRING, PORTAL_DEPTH), at(PORTAL_OPENING, PORTAL_SPRING)}, TUNNEL_WALL_COLOUR, 1.0f, true);
-	this->AddFlatQuad({at(-PORTAL_OPENING, 0), at(PORTAL_OPENING, 0), at(PORTAL_OPENING, 0, PORTAL_DEPTH), at(-PORTAL_OPENING, 0, PORTAL_DEPTH)}, TUNNEL_WALL_COLOUR, 1.0f, true);
-	std::array<Vec3, SEGMENTS + 3> back;
-	back[0] = at(-PORTAL_OPENING, 0, PORTAL_DEPTH);
-	back[1] = at(PORTAL_OPENING, 0, PORTAL_DEPTH);
-	for (int i = 0; i < SEGMENTS; i++) {
-		this->AddFlatQuad({at(arch[i].first, arch[i].second), at(arch[i + 1].first, arch[i + 1].second), at(arch[i + 1].first, arch[i + 1].second, PORTAL_DEPTH), at(arch[i].first, arch[i].second, PORTAL_DEPTH)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+	if (this->InLineWithTunnel(tile, z)) {
+		this->AddTunnelInside(tile, z);
+	} else {
+		/* The walls and floor of the opening, going into the dark. */
+		this->AddFlatQuad({at(-PORTAL_OPENING, 0), at(-PORTAL_OPENING, 0, PORTAL_DEPTH), at(-PORTAL_OPENING, PORTAL_SPRING, PORTAL_DEPTH), at(-PORTAL_OPENING, PORTAL_SPRING)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+		this->AddFlatQuad({at(PORTAL_OPENING, 0), at(PORTAL_OPENING, 0, PORTAL_DEPTH), at(PORTAL_OPENING, PORTAL_SPRING, PORTAL_DEPTH), at(PORTAL_OPENING, PORTAL_SPRING)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+		this->AddFlatQuad({at(-PORTAL_OPENING, 0), at(PORTAL_OPENING, 0), at(PORTAL_OPENING, 0, PORTAL_DEPTH), at(-PORTAL_OPENING, 0, PORTAL_DEPTH)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+		std::array<Vec3, SEGMENTS + 3> back;
+		back[0] = at(-PORTAL_OPENING, 0, PORTAL_DEPTH);
+		back[1] = at(PORTAL_OPENING, 0, PORTAL_DEPTH);
+		for (int i = 0; i < SEGMENTS; i++) {
+			this->AddFlatQuad({at(arch[i].first, arch[i].second), at(arch[i + 1].first, arch[i + 1].second), at(arch[i + 1].first, arch[i + 1].second, PORTAL_DEPTH), at(arch[i].first, arch[i].second, PORTAL_DEPTH)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+		}
+		for (int i = 0; i <= SEGMENTS; i++) back[i + 2] = at(arch[SEGMENTS - i].first, arch[SEGMENTS - i].second, PORTAL_DEPTH);
+		this->AddFlatPolygon(back, TUNNEL_DARK, 1.0f, true);
 	}
-	for (int i = 0; i <= SEGMENTS; i++) back[i + 2] = at(arch[SEGMENTS - i].first, arch[SEGMENTS - i].second, PORTAL_DEPTH);
-	this->AddFlatPolygon(back, TUNNEL_DARK, 1.0f, true);
 
 	/* The top of the face, where it stands above the hill. */
 	constexpr float THICK = 1.5f;
@@ -2983,6 +3022,80 @@ void Renderer::AddTunnelPortal(TileIndex tile, int z)
 		this->AddFlatQuad({at(s, hill), at(s, hill, THICK), at(s, PORTAL_HEIGHT, THICK), at(s, PORTAL_HEIGHT)}, PORTAL_COLOUR, 1.0f);
 		/* The wall along the track, up to the slope of the hill beside it. */
 		this->AddFlatQuad({at(s, 0, -TILE), at(s, 0), at(s, hill + 0.8f), at(s, 0.8f, -TILE)}, PORTAL_COLOUR, 1.0f);
+	}
+}
+
+/**
+ * Check whether the camera is in line with a tunnel, in it or on the track leading into it, so it looks along it.
+ * @param tile An entrance of the tunnel.
+ * @param z Height of the bottom of the entrance tile.
+ * @return True when the camera is within the opening of the tunnel, seen along it.
+ */
+bool Renderer::InLineWithTunnel(TileIndex tile, int z) const
+{
+	const auto [face, in, side] = GetTunnelFace(tile, z);
+	const Vec3 rel = this->cam.pos - face;
+	const float height = rel.z;
+	return std::abs(rel.x * side.x + rel.y * side.y) < PORTAL_OPENING && height > 0 && height < PORTAL_SPRING + PORTAL_OPENING;
+}
+
+/**
+ * Add the inside of a tunnel, for a camera in it or in line with it: a dark vault over the track, lighter towards
+ * the entrances, where the daylight comes in. Tunnels are straight, so the far entrance shows as a bright opening.
+ * @param tile An entrance of the tunnel.
+ * @param z Height of the bottom of the entrance tile, where the track goes into the tunnel.
+ */
+void Renderer::AddTunnelInside(TileIndex tile, int z)
+{
+	const TileIndex end = GetOtherTunnelEnd(tile);
+	if (std::ranges::find(this->tunnels, tile) != this->tunnels.end() || std::ranges::find(this->tunnels, end) != this->tunnels.end()) return;
+	this->tunnels.push_back(tile);
+
+	const auto [face, in, side] = GetTunnelFace(tile, z);
+	/* A point s to the side and h above the track, d into the tunnel from the face of the portal. */
+	auto at = [&](float s, float h, float d) { return face + side * s + in * d + Vec3{0, 0, h}; };
+
+	/* Only the part from a bit behind the camera to where the haze swallows everything. */
+	const float length = (DistanceManhattan(tile, end) - 1) * TILE;
+	const Vec3 rel = this->cam.pos - face;
+	const float camera = rel.x * in.x + rel.y * in.y;
+	const float from = std::max(0.0f, std::floor((camera - 2 * TILE) / TUNNEL_STEP) * TUNNEL_STEP);
+	const float to = std::min(length, camera + FOG_END);
+
+	/* The cross section: the walls up to the arch, the arch, and down the other wall. */
+	std::array<std::pair<float, float>, PORTAL_SEGMENTS + 3> profile;
+	profile.front() = {-PORTAL_OPENING, 0};
+	for (int i = 0; i <= PORTAL_SEGMENTS; i++) profile[i + 1] = GetArchPoint(i, PORTAL_OPENING);
+	profile.back() = {PORTAL_OPENING, 0};
+
+	for (float d0 = from; d0 < to; d0 += TUNNEL_STEP) {
+		const float d1 = std::min(d0 + TUNNEL_STEP, to);
+		const float middle = (d0 + d1) / 2;
+		/* Daylight comes in at both ends; every other piece is darker, so the walls are seen to pass by. */
+		const float day = std::exp(-std::min(middle, length - middle) / TUNNEL_GLOW);
+		const float rib = static_cast<int>(d0 / TUNNEL_STEP) % 2 == 0 ? 1.0f : 0.8f;
+		const RGB vault = (TUNNEL_VAULT_LIT * day + TUNNEL_VAULT_DARK * (1 - day)) * rib;
+		for (size_t i = 0; i + 1 < profile.size(); i++) {
+			const auto [s0, h0] = profile[i];
+			const auto [s1, h1] = profile[i + 1];
+			this->AddFlatQuad({at(s0, h0, d0), at(s1, h1, d0), at(s1, h1, d1), at(s0, h0, d1)}, vault, 1.0f, true);
+		}
+		this->AddFlatQuad({at(-PORTAL_OPENING, 0, d0), at(PORTAL_OPENING, 0, d0), at(PORTAL_OPENING, 0, d1), at(-PORTAL_OPENING, 0, d1)}, TUNNEL_FLOOR_LIT * day + TUNNEL_FLOOR_DARK * (1 - day), 1.0f, true);
+
+		const float dist = std::abs(middle - camera);
+		if (dist < SLEEPER_DIST) {
+			const float hl = SLEEPER_LENGTH / 2, hw = SLEEPER_WIDTH / 2;
+			for (float d = d0 + SLEEPER_SPACING / 2; d < d1; d += SLEEPER_SPACING) {
+				this->AddFlatQuad({at(-hl, 0.08f, d - hw), at(hl, 0.08f, d - hw), at(hl, 0.08f, d + hw), at(-hl, 0.08f, d + hw)}, SLEEPER_COLOUR * (0.2f + 0.8f * day), 1.0005f, true);
+			}
+		}
+		if (dist < RAIL_DIST) {
+			const RGB rail = TUNNEL_RAIL_LIT * day + TUNNEL_RAIL_DARK * (1 - day);
+			const float hw = RAIL_WIDTH / 2;
+			for (float s : {-RAIL_GAUGE / 2, RAIL_GAUGE / 2}) {
+				this->AddFlatQuad({at(s - hw, 0.18f, d0), at(s + hw, 0.18f, d0), at(s + hw, 0.18f, d1), at(s - hw, 0.18f, d1)}, rail, 1.001f, true);
+			}
+		}
 	}
 }
 
@@ -3244,7 +3357,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	this->frame.resize(pixels);
 	this->depth.assign(pixels, 0.0f);
 
-	float pitch = PITCH_DEG * static_cast<float>(M_PI) / 180.0f;
+	float pitch = PITCH_DEG * static_cast<float>(M_PI) / 180.0f + camera.pitch;
 	Vec3 flat_fwd = {std::cos(camera.yaw), std::sin(camera.yaw), 0};
 	Vec3 world_up = {0, 0, 1};
 	this->cam.pos = {camera.x, camera.y, camera.z};
@@ -3281,6 +3394,9 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	}
 	std::sort(visible.begin(), visible.end());
 	this->triangles.clear();
+	this->tunnels.clear();
+	/* Inside a tunnel its vault is nearest, and hides the hill around it. */
+	if (IsValidTile(camera.tunnel) && IsTunnelTile(camera.tunnel)) this->AddTunnelInside(camera.tunnel, std::get<int>(GetTilePixelSlope(camera.tunnel)));
 	for (const auto &[dist, tile] : visible) this->AddTile(tile, dist);
 	this->AddVehicles();
 
