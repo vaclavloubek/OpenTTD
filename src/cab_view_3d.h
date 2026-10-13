@@ -11,6 +11,7 @@
 #define CAB_VIEW_3D_H
 
 #include "core/geometry_type.hpp"
+#include "tile_type.h"
 
 /** Smallest size of the picture of the 3D view compared to the view, when drawing at full size takes too long. */
 constexpr float CAB_VIEW_3D_MIN_SCALE = 0.5f;
@@ -21,7 +22,9 @@ struct CabViewCamera {
 	float y = 0; ///< Y position of the eye, in world coordinates.
 	float z = 0; ///< Height of the eye, in world coordinates.
 	float yaw = 0; ///< Direction of view in radians; 0 looks towards +x, pi/2 towards +y.
-	bool dark = false; ///< Nothing to see, e.g. in a tunnel or depot.
+	float pitch = 0; ///< Tilt of the view in radians, upwards positive, on top of the slight look down of the 3D view.
+	bool dark = false; ///< Nothing to see, e.g. in a depot.
+	TileIndex tunnel = INVALID_TILE; ///< An entrance of the tunnel the train is in, whose inside the view shows.
 
 	bool operator==(const CabViewCamera &) const = default;
 };

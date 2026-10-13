@@ -33,6 +33,19 @@ jobs:
       id: vcpkg
       uses: OpenTTD/actions/setup-vcpkg@v6
 
+    # Kept in the cache, so the app does not depend on the CDN answering every time.
+    - name: Cache OpenGFX
+      id: opengfx
+      uses: actions/cache@v4
+      with:
+        path: opengfx-all.zip
+        key: opengfx-8.0-all
+
+    - name: Download OpenGFX
+      if: steps.opengfx.outputs.cache-hit != 'true'
+      run: |
+        curl -fL --retry 5 --retry-delay 10 --retry-all-errors --speed-limit 10000 --speed-time 30 https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip -o opengfx-all.zip
+
     - name: Build
       run: |
         mkdir build
@@ -63,8 +76,7 @@ jobs:
         APP=$(echo _CPack_Packages/*/Bundle/openttd-*/OpenTTD.app)
 
         echo "::group::Add OpenGFX"
-        curl -fL https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip -o opengfx-all.zip
-        unzip opengfx-all.zip -d opengfx
+        unzip ../opengfx-all.zip -d opengfx
         mkdir -p "${APP}/Contents/Resources/baseset"
         cp opengfx/*.tar "${APP}/Contents/Resources/baseset/"
         echo "::endgroup::"

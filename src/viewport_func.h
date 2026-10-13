@@ -91,6 +91,8 @@ struct BoxSpriteToDraw {
 	int32_t xmax; ///< Maximal world X coordinate of the bounding box, inclusive.
 	int32_t ymax; ///< Maximal world Y coordinate of the bounding box, inclusive.
 	int32_t zmax; ///< Maximal world Z coordinate of the bounding box, inclusive.
+	bool child; ///< Whether the sprite is drawn together with the sprite before it, in its bounding box, like the trees of a tile.
+	bool bridge; ///< Whether the sprite is part of a bridge above the tile.
 };
 
 void CollectTileGroundSprites(TileIndex tile, std::vector<GroundSpriteToDraw> &sprites, std::vector<BoxSpriteToDraw> *boxes = nullptr);
