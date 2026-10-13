@@ -84,6 +84,7 @@ constexpr float SLEEPER_WIDTH = 0.9f; ///< Width of a sleeper, along the track.
 constexpr float SLEEPER_SPACING = 2.0f; ///< Distance between sleepers.
 constexpr float TRACK_SMOOTH_LENGTH = 2.0f; ///< Length along straight track over which its ground is smoothed, see #SmoothAlong.
 constexpr float BOX_DIST = 32.0f * TILE; ///< Buildings, trees, signals and vehicles are drawn up to this distance.
+constexpr float PLATFORM_HEIGHT = 0.5f; ///< Heights of the platforms of stations in the 3D view, compared to their boxes; from the cab, real platforms reach well below the eye.
 constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles in the 3D view, compared to their heights in the sprites; the isometric view makes them look tall.
 constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
 constexpr float ISO_UNITS = 0.3536f; ///< Width of a sprite pixel across the view, in world units; the isometric view draws a unit as 2 * sqrt(2) pixels.
@@ -99,21 +100,19 @@ constexpr float DECK_DEPTH = 2.0f; ///< Thickness of the deck of a bridge, below
 constexpr float PILLAR_SIZE = 2.4f; ///< Width of a pillar under a bridge.
 constexpr float AQUEDUCT_WALL = 1.2f; ///< Thickness of the walls along the water of an aqueduct.
 constexpr float AQUEDUCT_WALL_HEIGHT = 2.0f; ///< Height of the walls along the water of an aqueduct.
-constexpr float BRIDGE_HEADROOM = 1.5f; ///< How far below the deck of a bridge the eye stays when passing under it.
-constexpr float HEADROOM_SLOPE = 0.5f; ///< How much the eye is lowered per unit travelled towards a bridge it passes under.
 constexpr float BRIDGE_DECK_EDGE = 2.0f; ///< How far the edges of the deck of a bridge are from the sides of its tiles.
 constexpr float RAMP_EDGE = 2.5f; ///< How far the edges of the deck of a bridge ramp are from the sides of its tile.
 constexpr float BRIDGE_SIDE_PLANE = 13.5f; ///< Where the near side of a bridge stands across its tiles when its sprite does not tell.
 constexpr float BRIDGE_SIDE_BOOST = 1.25f; ///< How much more opaque the sides of bridges and fences are made, see #Renderer::GetSideTexture.
 constexpr float FENCE_INSET = 0.6f; ///< How far fences stand inside the sides of their tiles, so those of two tiles on the same side don't overlap.
 constexpr float FENCE_DIST = 12.0f * TILE; ///< Fences along railways are drawn up to this distance; further away, their posts get thinner than a pixel.
-constexpr float FENCE_HEIGHT = 3.0f; ///< Height of the fences along railways.
+constexpr float FENCE_HEIGHT = 2.0f; ///< Height of the fences along railways, half that of the eye in the cab.
 constexpr float FENCE_POST_SPACING = 4.0f; ///< Distance between the posts of fences along railways.
 constexpr float FENCE_POST_SIZE = 0.3f; ///< Width of a post of a fence along a railway.
 constexpr float FENCE_RAIL_SIZE = 0.25f; ///< Height of a rail of a fence along a railway.
 constexpr float PORTAL_HEIGHT = 11.0f; ///< Height of the face of a tunnel portal; its top stands above the hill.
 constexpr float PORTAL_OPENING = 4.5f; ///< Half the width of the opening of a tunnel portal, and the radius of its arch.
-constexpr float PORTAL_SPRING = 5.0f; ///< Height where the arch of a tunnel portal starts.
+constexpr float PORTAL_SPRING = 3.0f; ///< Height where the arch of a tunnel portal starts; the top of the arch stays below the hill, which would show in the opening otherwise.
 constexpr float PORTAL_RING = 0.9f; ///< Width of the ring of stones around the opening of a tunnel portal.
 constexpr float PORTAL_DEPTH = 3.0f; ///< How far the walls of the opening of a tunnel go into the darkness.
 
@@ -1350,7 +1349,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 							/* Its platform, around the building. */
 							BoxSpriteToDraw platform = box;
 							platform.zmax = platform.zmin + 1;
-							this->AddBox(platform, z, 1.0f);
+							this->AddBox(platform, z, PLATFORM_HEIGHT);
 						}
 						break;
 					}
@@ -1374,7 +1373,9 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					if (box.xmax - box.xmin < 2 && box.ymax - box.ymin < 2) {
 						this->AddBillboard(box);
 					} else {
-						this->AddBox(box, z, 1.0f);
+						/* Platforms, the low boxes of stations standing on the ground. */
+						const bool platform = IsTileType(tile, MP_STATION) && box.zmin <= z + 1 && box.zmax - box.zmin <= 2;
+						this->AddBox(box, z, platform ? PLATFORM_HEIGHT : 1.0f);
 					}
 					break;
 			}
@@ -3210,40 +3211,6 @@ void Renderer::Output(const Rect &r)
 }
 
 /**
- * Get how high the eye may be, so it passes under the decks of bridges instead of through them; the isometric view
- * lets vehicles pass under bridges a level above them, which leaves less room than the eye on their roof needs.
- * Towards such a bridge, the eye is lowered gradually.
- * @param x X coordinate of the eye.
- * @param y Y coordinate of the eye.
- * @param z Height of the eye.
- * @return The highest the eye may be; \a z when no bridge is in the way.
- */
-static float Headroom(float x, float y, float z)
-{
-	/* The tiles around the eye are far enough to lower it all the way. */
-	constexpr int REACH = 1;
-	const int tx = FloorDiv(static_cast<int32_t>(x), TILE_SIZE);
-	const int ty = FloorDiv(static_cast<int32_t>(y), TILE_SIZE);
-	float limit = z;
-	for (int dy = -REACH; dy <= REACH; dy++) {
-		for (int dx = -REACH; dx <= REACH; dx++) {
-			if (tx + dx < 0 || ty + dy < 0 || tx + dx >= static_cast<int>(Map::SizeX()) || ty + dy >= static_cast<int>(Map::SizeY())) continue;
-			const TileIndex tile = TileXY(tx + dx, ty + dy);
-			if (!IsBridgeAbove(tile)) continue;
-			const float under = static_cast<float>(GetBridgePixelHeight(GetSouthernBridgeEnd(tile))) - DECK_DEPTH;
-			/* Not the bridge the vehicle drives on, which is well below the eye. */
-			if (under < z - TILE_HEIGHT + DECK_DEPTH) continue;
-			const float x0 = static_cast<float>((tx + dx) * TILE_SIZE);
-			const float y0 = static_cast<float>((ty + dy) * TILE_SIZE);
-			const float out_x = std::max({x0 - x, 0.0f, x - x0 - TILE});
-			const float out_y = std::max({y0 - y, 0.0f, y - y0 - TILE});
-			limit = std::min(limit, under - BRIDGE_HEADROOM + std::hypot(out_x, out_y) * HEADROOM_SLOPE);
-		}
-	}
-	return limit;
-}
-
-/**
  * Draw the view.
  * @param r Where on the screen.
  * @param camera Where the camera is.
@@ -3280,7 +3247,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	float pitch = PITCH_DEG * static_cast<float>(M_PI) / 180.0f;
 	Vec3 flat_fwd = {std::cos(camera.yaw), std::sin(camera.yaw), 0};
 	Vec3 world_up = {0, 0, 1};
-	this->cam.pos = {camera.x, camera.y, Headroom(camera.x, camera.y, camera.z)};
+	this->cam.pos = {camera.x, camera.y, camera.z};
 	this->cam.right = flat_fwd.Cross(world_up);
 	this->cam.fwd = flat_fwd * std::cos(pitch) + world_up * std::sin(pitch);
 	this->cam.up = world_up * std::cos(pitch) - flat_fwd * std::sin(pitch);

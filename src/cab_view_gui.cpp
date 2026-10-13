@@ -15,6 +15,8 @@
 #include "vehicle_gui.h"
 #include "train.h"
 #include "landscape.h"
+#include "bridge_map.h"
+#include "rail_map.h"
 #include "pbs.h"
 #include "pathfinder/follow_track.hpp"
 #include "company_func.h"
@@ -63,12 +65,12 @@ static constexpr float CAB_VIEW_DIAL_SWEEP = 270.0f;
 static constexpr int CAB_VIEW_DIAL_TICKS = 10;
 /** Position of the maximum speed of the vehicle on the speedometer dial; beyond it is the red zone. */
 static constexpr float CAB_VIEW_DIAL_MAX_SPEED = 0.85f;
-/** Height of the eye of the 3D view above the rails: the roof of the train. */
-static constexpr float CAB_VIEW_3D_EYE = 8.0f;
+/** Height of the eye of the 3D view above the rails: the windows of the cab, well below the decks of bridges and the tops of tunnels. */
+static constexpr float CAB_VIEW_3D_EYE = 4.0f;
 /** Distance (in world coordinates) over which the 3D view turns most of the way into a new direction of travel. */
 static constexpr float CAB_VIEW_3D_TURN_DIST = 6.0f;
 /** Distance (in world coordinates) over which the 3D view follows most of a change in height, which on slopes comes in steps. */
-static constexpr float CAB_VIEW_3D_CLIMB_DIST = 3.0f;
+static constexpr float CAB_VIEW_3D_CLIMB_DIST = 1.5f;
 /**
  * Part of the time between two redraws of the screen that making a picture of the 3D view may take.
  * When it takes longer, the picture is made smaller, and when even that is not enough, the view is drawn
@@ -177,7 +179,37 @@ private:
 	}
 
 	/**
-	 * Place the camera of the 3D view for the current game tick: on the roof of the front of the train.
+	 * Get the height of the track of a train at a point near its front, where the eye of the 3D view is.
+	 * The height of the train is that of its middle, which on slopes and ramps is lower or higher than its front.
+	 * @param v The train.
+	 * @param x X coordinate of the point.
+	 * @param y Y coordinate of the point.
+	 * @return The height of the track.
+	 */
+	static float GetTrackHeight(const Vehicle *v, float x, float y)
+	{
+		auto height = [v](int x, int y) {
+			if (!IsInsideBS(x, 0, Map::SizeX() * TILE_SIZE) || !IsInsideBS(y, 0, Map::SizeY() * TILE_SIZE)) return v->z_pos;
+			TileIndex tile = TileVirtXY(x, y);
+			/* On a bridge, the track is as high as the bridge, up to the ramp at its other end. */
+			if (IsBridgeAbove(tile)) {
+				int bridge = GetBridgePixelHeight(GetSouthernBridgeEnd(tile));
+				if (v->z_pos > bridge - static_cast<int>(TILE_HEIGHT)) return bridge;
+			}
+			/* Beyond the end of the line or the entrance of a tunnel, keep the height of the train. */
+			if (GetTileRailType(tile) == INVALID_RAILTYPE) return v->z_pos;
+			return GetSlopePixelZ(x, y, true);
+		};
+		/* Heights are in whole units; blend those of the points around, so the eye does not climb in steps. */
+		int ix = static_cast<int>(std::floor(x));
+		int iy = static_cast<int>(std::floor(y));
+		float fx = x - ix;
+		float fy = y - iy;
+		return (height(ix, iy) * (1 - fx) + height(ix + 1, iy) * fx) * (1 - fy) + (height(ix, iy + 1) * (1 - fx) + height(ix + 1, iy + 1) * fx) * fy;
+	}
+
+	/**
+	 * Place the camera of the 3D view for the current game tick: at the windows of the front of the train.
 	 * The direction and height ease with the distance travelled instead of with time, so
 	 * the view follows the track through curves and over slopes at any speed.
 	 * @param jump Place the camera at once, without easing or moving smoothly from where it was.
@@ -198,10 +230,8 @@ private:
 		jump |= this->tick_cameras.empty() || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE || dark != this->tick_cameras.back().camera.dark;
 		if (jump) {
 			this->yaw = target;
-			this->height = static_cast<float>(v->z_pos);
 		} else {
 			this->yaw += turn * (1.0f - std::exp(-moved / CAB_VIEW_3D_TURN_DIST));
-			this->height += (v->z_pos - this->height) * (1.0f - std::exp(-moved / CAB_VIEW_3D_CLIMB_DIST));
 		}
 
 		CabViewCamera camera;
@@ -212,6 +242,12 @@ private:
 		float half_length = Train::From(v)->gcache.cached_veh_length / 2.0f;
 		camera.x = x + std::cos(this->yaw) * half_length;
 		camera.y = y + std::sin(this->yaw) * half_length;
+		float track = GetTrackHeight(v, camera.x, camera.y);
+		if (jump) {
+			this->height = track;
+		} else {
+			this->height += (track - this->height) * (1.0f - std::exp(-moved / CAB_VIEW_3D_CLIMB_DIST));
+		}
 		camera.z = this->height + CAB_VIEW_3D_EYE;
 
 		auto now = std::chrono::steady_clock::now();

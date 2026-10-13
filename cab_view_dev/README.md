@@ -58,14 +58,15 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   Trolejové vedení se vynechává (zatím jen tenké čáry). Funguje i pro stanice z NewGRF. Budova nádraží je zatím
   jen kvádr se střechou namalovanou na stěnách – skutečné tvary budov jsou úkol kroku 4.
 - Opar od 14 dlaždic, dohled 56 dlaždic, obloha s přechodem do oparu.
-- **Kamera** na čele vlaku ve výšce střechy (8 jednotek), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
+- **Kamera** na čele vlaku ve výšce oken kabiny (4 jednotky nad kolejí, asi 2,5 m), 6° dolů, zorný úhel 64°. Dotáčí se podle ujeté dráhy
   (ne podle času), takže v zatáčce stíhá i ve 250 km/h. V depu a v tunelu je obraz černý.
 - **Plynulost**: vlak se ve hře posouvá po celých krocích (1/16 dlaždice), v 90 km/h jen asi každý třetí herní
   tik, a herní tiky (27 ms) přicházejí jinak než snímky obrazovky, často pozdě nebo po dvou (když kreslení
   trvá dlouho). Kamera proto bere i rozjetý krok (`progress`), pamatuje si posledních 8 tiků a obraz ukazuje
   okamžik asi 1,5 tiku pozadu. Ten běží podle hodin a podle tiků se mění jen jeho rychlost (nejvýš o 10 %),
   takže se pohyb netřese (dřív se okamžik dorovnával skokem k tikům a blízké pražce se chvěly).
-  Výška se na svazích vyhlazuje podle ujeté dráhy (ve hře stoupá po skocích).
+  Výška oka se bere z koleje pod čelem vlaku (`GetTrackHeight`; hra dává výšku středu vlaku, která na svahu
+  a nájezdu mostu zaostává) a vyhlazuje se podle ujeté dráhy na 1,5 jednotky.
 - Překresluje se při pohybu kamery na každý snímek obrazovky (60×), když obrázek zabere nejvýš 65 % času mezi
   snímky. Jinak se obrázek zmenší (až na 50 % v každém směru) a na obrazovku se hladce zvětší; když nestačí ani
   to, kreslí se na každý druhý (třetí…) snímek, rovnoměrně. Pomalejší kreslení každý druhý snímek na Macu
@@ -115,7 +116,7 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   jihozápad (délka z hry, šířka a výška ze spritu). Vozidlo, na kterém je kamera, se vynechává.
 - Budovy, stromy, návěstidla a vozidla se kreslí do 32 dlaždic.
 - **Ploty podél kolejí** (hra je staví u kolejí, kde soused není dráha té společnosti) jsou sloupky po 4 jednotkách
-  s horním a dolním břevnem, 3 jednotky vysoké, v průměrné barvě spritu plotu (tedy v barvě společnosti), kousek
+  s horním a dolním břevnem, 2 jednotky vysoké (polovina výšky oka), v průměrné barvě spritu plotu (tedy v barvě společnosti), kousek
   od okraje dlaždice; úhlopříčné ploty u kusů kolejí v rohu vedou přes úhlopříčku. Sprite plotu je v OpenGFX
   pletivo, které ve 3D dávalo zubatou zeď, proto geometrie (`AddRailFence`, `AddPostFence`). Kreslí se do
   12 dlaždic, dál by sloupky byly tenčí než pixel.
@@ -139,11 +140,13 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   taky jen deska), kolej na něm stoupá. Silniční mosty jsou stejné, jen bez koleje.
 - **Akvadukty** jsou z kamene (světle šedé): mostovka s vodou ze spritu, podél ní zídky 2 jednotky vysoké,
   pilíře i nájezdy v barvě kamene (pilíře ze spritu hry jsou tmavé, akvadukt pak vypadal jako černý trám).
-- **Pod mostem**: hra pouští vozidla pod most o úroveň výš, ale oko na střeše vlaku (8 jednotek nad kolejí) by
-  projelo mostovkou. Pod mostem se proto oko sníží na 1,5 jednotky pod mostovku, plynule o 0,5 jednotky na
-  jednotku cesty už před mostem (`Headroom`).
+- **Pod mostem**: hra pouští vozidla pod most o úroveň výš (spodek mostovky je 6 jednotek nad kolejí). Oko
+  bylo dřív na střeše vlaku (8 jednotek) a pod mostem se snižovalo, takže to na Macu vypadalo, že kamera
+  naráží do mostu, akvaduktu i horní hrany tunelu. Teď je oko trvale ve výšce oken (4 jednotky) a pod mosty
+  projede bez snižování. Nástupiště jsou proto poloviční výšky a ploty nižší, jinak z oken vypadaly jako zdi.
 - **Tunely**: vjezd je kamenný portál s obloukem, světlým věncem kolem otvoru, tmou uvnitř a opěrnými zdmi
-  podél koleje; kopec nad vjezdem se ve 3D neklesá, kolej vede rovně do portálu (`SetTunnelGround`,
+  podél koleje; vrchol oblouku je 7,5 jednotky nad kolejí, pod hranou kopce (8) (dřív byl nad ní a v otvoru byl
+  vidět pruh trávy); kopec nad vjezdem se ve 3D neklesá, kolej vede rovně do portálu (`SetTunnelGround`,
   `AddTunnelPortal`). V tunelu je obraz dál černý.
 - **Přejezdy**: u silnice před a za kolejí stojí čtyři sloupky s bílým křížem a dvěma světly směrem k silnici;
   když hra přejezd zavře, svítí červeně (`AddCrossing`). Silnice jinak zůstávají texturou země.
@@ -159,7 +162,7 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
    `openttd-cab-view-macos-arm64`, stáhnout ze stránky běhu na GitHubu, rozbalit, spustit). Na MacBooku Air
    3D pohled běží v plném rozlišení Retiny.
 2. Krok 4: doplnit 3D svět – budovy, návěstidla, stromy, ostatní vozidla, mosty, portály tunelů, přejezdy,
-   ploty, silniční mosty a akvadukty jsou hotové; zbývá vyzkoušet ploty a akvadukty na Macu.
+   ploty, silniční mosty a akvadukty jsou hotové; kamera je níž (okna kabiny); zbývá vyzkoušet na Macu.
 3. Případně: výhled podél silnice i pro silniční vozidla (`CFollowTrackRoad`), další údaje na palubní desce
    (návěst, sklon), klávesová zkratka pro otevření kabiny.
 
