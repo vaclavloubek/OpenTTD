@@ -33,6 +33,12 @@
 #include "rail_map.h"
 #include "road_map.h"
 #include "station_map.h"
+#include "bridge.h"
+#include "bridge_map.h"
+#include "tunnel_map.h"
+#include "tunnelbridge_map.h"
+#include "rail.h"
+#include "newgrf_railtype.h"
 #include "settings_type.h"
 #include "track_func.h"
 #include "spritecache.h"
@@ -85,6 +91,20 @@ constexpr float SIGNAL_HEIGHT = 6.0f; ///< Height of the top of a signal above t
 constexpr float SIGNAL_HEAD_HEIGHT = 2.4f; ///< Height of the head of a signal, with its lamps.
 constexpr float SIGNAL_HEAD_WIDTH = 1.1f; ///< Width of the head of a signal.
 constexpr float SIGNAL_LAMP_SIZE = 0.7f; ///< Size of a lamp of a signal; larger than real, so it can be seen from afar.
+constexpr float CROSSING_POST_HEIGHT = 5.5f; ///< Height of the posts of the lights of a level crossing.
+constexpr float CROSSING_POST_ALONG = 2.2f; ///< How far the posts of a level crossing stand from the edges of the tile, along the road.
+constexpr float CROSSING_POST_ACROSS = 1.6f; ///< How far the posts of a level crossing stand from the sides of the tile, next to the road.
+constexpr float DECK_DEPTH = 2.0f; ///< Thickness of the deck of a bridge, below the track.
+constexpr float PILLAR_SIZE = 2.4f; ///< Width of a pillar under a bridge.
+constexpr float BRIDGE_DECK_EDGE = 2.0f; ///< How far the edges of the deck of a bridge are from the sides of its tiles.
+constexpr float RAMP_EDGE = 2.5f; ///< How far the edges of the deck of a bridge ramp are from the sides of its tile.
+constexpr float BRIDGE_SIDE_PLANE = 13.5f; ///< Where the near side of a bridge stands across its tiles when its sprite does not tell.
+constexpr float BRIDGE_SIDE_BOOST = 1.25f; ///< How much more opaque the sides of bridges are made, see #Renderer::GetBridgeSideTexture.
+constexpr float PORTAL_HEIGHT = 11.0f; ///< Height of the face of a tunnel portal; its top stands above the hill.
+constexpr float PORTAL_OPENING = 4.5f; ///< Half the width of the opening of a tunnel portal, and the radius of its arch.
+constexpr float PORTAL_SPRING = 5.0f; ///< Height where the arch of a tunnel portal starts.
+constexpr float PORTAL_RING = 0.9f; ///< Width of the ring of stones around the opening of a tunnel portal.
+constexpr float PORTAL_DEPTH = 3.0f; ///< How far the walls of the opening of a tunnel go into the darkness.
 
 /** Direction each way something can face goes to, in world coordinates. */
 constexpr std::array<std::pair<float, float>, DIR_END> HEADINGS = {{
@@ -120,6 +140,7 @@ constexpr RGB RAIL_COLOUR = {200, 200, 200}; ///< Colour of the rails.
 constexpr RGB RAIL_FAR_COLOUR = {104, 92, 80}; ///< Colour of far away rails, about that of the ballast under them.
 constexpr RGB SLEEPER_COLOUR = {72, 44, 4}; ///< Colour of the sleepers.
 constexpr RGB FOUNDATION_COLOUR = {132, 112, 88}; ///< Colour of the sides of foundations.
+constexpr RGB CROSSING_CROSS_COLOUR = {236, 232, 224}; ///< Colour of the cross on the posts of a level crossing.
 constexpr RGB SIGNAL_POST_COLOUR = {96, 96, 100}; ///< Colour of the post of a signal.
 constexpr RGB SIGNAL_HEAD_COLOUR = {30, 30, 32}; ///< Colour of the head of a signal.
 constexpr RGB SIGNAL_RED_LIT = {255, 40, 24}; ///< Colour of the red lamp of a signal showing stop.
@@ -127,6 +148,10 @@ constexpr RGB SIGNAL_RED_DARK = {84, 28, 22}; ///< Colour of the red lamp of a s
 constexpr RGB SIGNAL_GREEN_LIT = {48, 255, 96}; ///< Colour of the green lamp of a signal showing go.
 constexpr RGB SIGNAL_GREEN_DARK = {22, 72, 38}; ///< Colour of the green lamp of a signal showing stop.
 constexpr RGB SEMAPHORE_ARM_COLOUR = {196, 28, 24}; ///< Colour of the arm of a semaphore signal.
+constexpr RGB PORTAL_COLOUR = {124, 114, 100}; ///< Colour of the stone face of a tunnel portal.
+constexpr RGB PORTAL_RING_COLOUR = {170, 158, 140}; ///< Colour of the ring of stones around the opening of a tunnel portal.
+constexpr RGB TUNNEL_WALL_COLOUR = {44, 40, 36}; ///< Colour of the walls just inside a tunnel.
+constexpr RGB TUNNEL_DARK = {6, 6, 6}; ///< Colour of the darkness inside a tunnel.
 
 /** A vector in world coordinates. */
 struct Vec3 {
@@ -287,6 +312,7 @@ struct GroundTexture {
 	int left = 0; ///< Screen column of the first pixel, relative to the north corner of the tile.
 	int top = 0; ///< Screen row of the first pixel, relative to the north corner of the tile at its height.
 	std::array<Picture, TEXTURE_LEVELS> levels; ///< The picture, and versions of half, a quarter... the size.
+	RGB mean = {0, 0, 0}; ///< Average colour of the opaque pixels.
 
 	/**
 	 * Sample the texture smoothly.
@@ -484,6 +510,8 @@ private:
 	const RawSprite &GetRawSprite(SpriteID sprite);
 	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
 	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal, bool widen = true);
+	const GroundTexture &GetCompositeTexture(std::span<const BoxSpriteToDraw *const> boxes, Point origin);
+	const GroundTexture &GetBridgeSideTexture(SpriteID image, PaletteID pal, Axis axis);
 	RGB Fog(const RGB &colour, float dist) const;
 
 	std::vector<ScreenTriangle> triangles; ///< Triangles of the current picture, nearest first.
@@ -491,19 +519,28 @@ private:
 	void AddTriangle(const std::array<ClipVertex, 3> &tri, const Paint &paint);
 	void SetupTriangle(const ClipVertex &a, const ClipVertex &b, const ClipVertex &c, const Paint &paint);
 	void AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias, bool lit = false);
+	void AddFlatPolygon(std::span<const Vec3> pts, const RGB &colour, float bias, bool lit = false);
+	void AddFlatBox(const Vec3 &lo, const Vec3 &hi, const RGB &colour);
 	void Rasterise(int stripe, int stripes);
 
 	void DrawSky();
 	void AddTile(TileIndex tile, float dist);
-	void AddTrack(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddTrack(TileIndex tile, TrackBits tracks, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddBridgeSide(const GroundTexture &tex, float sx, float sy, Axis axis, float plane, float shown_plane, std::pair<float, float> along, std::pair<float, float> deck);
+	void AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddBridgePillars(TileIndex tile, Axis axis, float along, std::pair<float, float> across, float under, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour);
+	void AddBridgeRamp(TileIndex tile, int ground_z, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddTunnelPortal(TileIndex tile, int z);
 	void AddBox(const BoxSpriteToDraw &box, int ground_z, float height_scale);
 	const BuildingShape &GetBuildingShape(const BoxSpriteToDraw &box, bool station);
 	void AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station);
 	void AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_col, float foot_row, float scale_h, float scale_v);
 	void AddBillboard(const BoxSpriteToDraw &box);
 	bool AddSignal(TileIndex tile, const BoxSpriteToDraw &box);
+	void AddCrossing(TileIndex tile, int z);
 	void AddVehicles();
 	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
+	void AddTexturedFace(const GroundTexture &tex, float sx, float sy, std::span<const Vec3> world, std::span<const Vec3> shown, const Vec3 &normal, bool cutout);
 	void AddSpriteWalls(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, const std::array<float, 4> &tops, float band, bool cutout);
 	void AddSpriteBox(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, bool bottom, bool top, bool cutout = true);
 	void ChooseScale(float budget_ms);
@@ -663,6 +700,7 @@ static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int pass
 		if (!changed) break;
 	}
 	RGB mean = count > 0 ? sum * (1.0f / count) : RGB{0, 0, 0};
+	tex.mean = mean;
 	for (size_t i = 0; i < pic.pixels.size(); i++) {
 		if (alpha[i] <= 0) pic.pixels[i] = mean;
 	}
@@ -705,6 +743,33 @@ static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite
 }
 
 /**
+ * Replace the ground sprites of a tunnel entrance by those of flat ground with its track or road on it.
+ * The game draws the slope of the hill with the track going down into it; the 3D view keeps the track
+ * level, as it is in the tunnel, and puts a portal where the hill starts, see Renderer::AddTunnelPortal.
+ * @param tile The tunnel entrance.
+ * @param z Height of the bottom of the tile.
+ * @param sprites The ground sprites.
+ */
+static void SetTunnelGround(TileIndex tile, int z, std::vector<GroundSpriteToDraw> &sprites)
+{
+	const Point pt = RemapCoords(TileX(tile) * TILE_SIZE, TileY(tile) * TILE_SIZE, z);
+	const Axis axis = DiagDirToAxis(GetTunnelBridgeDirection(tile));
+	const bool snow = HasTunnelBridgeSnowOrDesert(tile);
+	sprites.clear();
+	if (GetTunnelBridgeTransportType(tile) != TRANSPORT_RAIL) {
+		sprites.push_back({axis == AXIS_X ? SPR_ROAD_X : SPR_ROAD_Y, PAL_NONE, pt.x, pt.y});
+		return;
+	}
+	const RailTypeInfo *rti = GetRailTypeInfo(GetRailType(tile));
+	if (rti->UsesOverlay()) {
+		sprites.push_back({snow ? SPR_FLAT_SNOW_DESERT_TILE : SPR_FLAT_GRASS_TILE, PAL_NONE, pt.x, pt.y});
+		sprites.push_back({GetCustomRailSprite(rti, tile, RTSG_OVERLAY) + (axis == AXIS_X ? RTO_X : RTO_Y), PAL_NONE, pt.x, pt.y});
+	} else {
+		sprites.push_back({rti->base_sprites.track_y + (axis == AXIS_X ? 1 : 0) + (snow ? rti->snow_offset : 0), PAL_NONE, pt.x, pt.y});
+	}
+}
+
+/**
  * Get the ground texture of a tile, putting it together from the tile's ground sprites when needed.
  * Tiles that look the same share the texture.
  * @param tile The tile.
@@ -718,6 +783,15 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 	this->ground_sprites.clear();
 	this->box_sprites.clear();
 	CollectTileGroundSprites(tile, this->ground_sprites, boxes ? &this->box_sprites : nullptr);
+	if (IsTunnelTile(tile)) SetTunnelGround(tile, tile_z, this->ground_sprites);
+	if (IsLevelCrossingTile(tile) && IsCrossingBarred(tile)) {
+		/* The lit lamps painted on the ground of a closed crossing are on the posts, see AddCrossing. */
+		const SpriteID crossing = GetRailTypeInfo(GetRailType(tile))->base_sprites.crossing;
+		for (GroundSpriteToDraw &sprite : this->ground_sprites) {
+			const SpriteID image = sprite.image & SPRITE_MASK;
+			if (image >= crossing && image < crossing + 12 && HasBit(image - crossing, 1)) sprite.image -= 2;
+		}
+	}
 
 	/* Positions relative to the north corner of the tile, in normal zoom pixels. */
 	Point origin = RemapCoords(TileX(tile) * TILE_SIZE, TileY(tile) * TILE_SIZE, tile_z);
@@ -800,6 +874,54 @@ const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal, bool
 	std::vector<float> alpha(pic.pixels.size(), 0.0f);
 	PaintSprite(pic, alpha, raw, pal, 0, 0, false);
 	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, widen);
+	return tex;
+}
+
+/**
+ * Get the texture of sprites standing in boxes, put on top of each other as the viewport draws them,
+ * to dress a surface in, like the deck of a bridge. Sprites that look the same share the texture.
+ * @param boxes The sprites.
+ * @param origin Where the texture is relative to, in virtual viewport coordinates.
+ * @return The texture; without any pixels when the sprites have none.
+ */
+const GroundTexture &Renderer::GetCompositeTexture(std::span<const BoxSpriteToDraw *const> boxes, Point origin)
+{
+	/* Starting with a marker that no ground texture has. */
+	this->key.clear();
+	this->key.push_back(INT32_MIN);
+	for (const BoxSpriteToDraw *box : boxes) {
+		this->key.push_back(box->image & SPRITE_MASK);
+		this->key.push_back(box->pal);
+		this->key.push_back(FloorDiv(box->x - origin.x, ZOOM_BASE));
+		this->key.push_back(FloorDiv(box->y - origin.y, ZOOM_BASE));
+	}
+	auto it = this->textures.find(this->key);
+	if (it != this->textures.end()) return it->second;
+	GroundTexture &tex = this->textures[this->key];
+
+	int left = INT_MAX, top = INT_MAX, right = INT_MIN, bottom = INT_MIN;
+	for (size_t i = 1; i < this->key.size(); i += 4) {
+		const RawSprite &raw = this->GetRawSprite(this->key[i]);
+		if (raw.pixels.empty()) continue;
+		left = std::min(left, this->key[i + 2] + raw.x_offs);
+		top = std::min(top, this->key[i + 3] + raw.y_offs);
+		right = std::max(right, this->key[i + 2] + raw.x_offs + raw.width);
+		bottom = std::max(bottom, this->key[i + 3] + raw.y_offs + raw.height);
+	}
+	if (left >= right || top >= bottom) return tex;
+
+	tex.left = left;
+	tex.top = top;
+	Picture &pic = tex.levels[0];
+	pic.width = right - left;
+	pic.height = bottom - top;
+	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, {0, 0, 0});
+	std::vector<float> alpha(pic.pixels.size(), 0.0f);
+	for (size_t i = 1; i < this->key.size(); i += 4) {
+		const RawSprite &raw = this->GetRawSprite(this->key[i]);
+		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top, false);
+	}
+	FinishTexture(tex, std::move(alpha), 4, false);
 	return tex;
 }
 
@@ -901,14 +1023,50 @@ void Renderer::SetupTriangle(const ClipVertex &a, const ClipVertex &b, const Cli
  */
 void Renderer::AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias, bool lit)
 {
-	Vec3 normal = (quad[1] - quad[0]).Cross(quad[2] - quad[0]);
+	this->AddFlatPolygon(quad, colour, bias, lit);
+}
+
+/**
+ * Add a flat coloured polygon, shaded by its orientation unless it gives light.
+ * @param pts The corners in world coordinates, in order around the polygon, which is convex.
+ * @param colour The colour.
+ * @param bias Depth bias.
+ * @param lit Whether it gives light, like a lamp, and so is not shaded.
+ */
+void Renderer::AddFlatPolygon(std::span<const Vec3> pts, const RGB &colour, float bias, bool lit)
+{
+	/* The corners may start with a sliver; take the normal of the widest corner. */
+	Vec3 normal = {0, 0, 0};
+	for (size_t i = 1; i + 1 < pts.size(); i++) {
+		Vec3 n = (pts[i] - pts[0]).Cross(pts[i + 1] - pts[0]);
+		if (n.Dot(n) > normal.Dot(normal)) normal = n;
+	}
 	if (normal.z < 0) normal = normal * -1;
 	Paint paint = {nullptr, lit ? colour : colour * Shade(normal), 1.0f, 0, bias};
 
-	std::array<ClipVertex, 4> v;
-	for (int i = 0; i < 4; i++) v[i] = {this->cam.ToCamera(quad[i]), {}};
-	this->AddTriangle({v[0], v[1], v[2]}, paint);
-	this->AddTriangle({v[0], v[2], v[3]}, paint);
+	ClipVertex first = {this->cam.ToCamera(pts[0]), {}};
+	ClipVertex prev = {this->cam.ToCamera(pts[1]), {}};
+	for (size_t i = 2; i < pts.size(); i++) {
+		ClipVertex next = {this->cam.ToCamera(pts[i]), {}};
+		this->AddTriangle({first, prev, next}, paint);
+		prev = next;
+	}
+}
+
+/**
+ * Add a box of a flat colour, without its bottom.
+ * @param lo The lowest corner.
+ * @param hi The highest corner.
+ * @param colour The colour.
+ */
+void Renderer::AddFlatBox(const Vec3 &lo, const Vec3 &hi, const RGB &colour)
+{
+	const std::array<Vec3, 4> ring = {Vec3{lo.x, lo.y, 0}, Vec3{hi.x, lo.y, 0}, Vec3{hi.x, hi.y, 0}, Vec3{lo.x, hi.y, 0}};
+	for (int i = 0; i < 4; i++) {
+		const Vec3 &a = ring[i], &b = ring[(i + 1) % 4];
+		this->AddFlatQuad({Vec3{a.x, a.y, lo.z}, Vec3{b.x, b.y, lo.z}, Vec3{b.x, b.y, hi.z}, Vec3{a.x, a.y, hi.z}}, colour, 1.0f);
+	}
+	this->AddFlatQuad({Vec3{lo.x, lo.y, hi.z}, Vec3{hi.x, lo.y, hi.z}, Vec3{hi.x, hi.y, hi.z}, Vec3{lo.x, hi.y, hi.z}}, colour, 1.0f);
 }
 
 /**
@@ -1041,6 +1199,7 @@ static TrackBits GetTileRailTracks(TileIndex tile)
 		case MP_RAILWAY: return IsPlainRail(tile) ? GetTrackBits(tile) : TRACK_BIT_NONE;
 		case MP_STATION: return HasStationRail(tile) ? GetRailStationTrackBits(tile) : TRACK_BIT_NONE;
 		case MP_ROAD: return IsLevelCrossing(tile) ? GetCrossingRailBits(tile) : TRACK_BIT_NONE;
+		case MP_TUNNELBRIDGE: return GetTunnelBridgeTransportType(tile) == TRANSPORT_RAIL ? DiagDirToDiagTrackBits(GetTunnelBridgeDirection(tile)) : TRACK_BIT_NONE;
 		default: return TRACK_BIT_NONE;
 	}
 }
@@ -1057,6 +1216,9 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	std::tie(raw_slope, raw_z) = GetTilePixelSlope(tile);
 	std::tie(slope, z) = GetFoundationPixelSlope(tile);
 	slope = RemoveHalftileSlope(slope);
+	/* The track goes into a tunnel level, see SetTunnelGround. */
+	const bool tunnel = IsTunnelTile(tile);
+	if (tunnel) slope = SLOPE_FLAT;
 
 	std::array<float, CORNER_END> corner_z;
 	for (Corner c : ALL_CORNERS) corner_z[c] = static_cast<float>(z + GetSlopePixelZInCorner(slope, c));
@@ -1066,7 +1228,8 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	/* Straight track: smooth its ground along the track, over whole steps of the pixels of its edges.
 	 * Going a unit along it moves two columns in the texture, and a row less how much it climbs. */
 	std::pair<float, float> smooth = {0, 0};
-	TrackBits tracks = GetTileRailTracks(tile);
+	/* The track of a bridge ramp is on the ramp, see AddBridgeRamp. */
+	TrackBits tracks = IsBridgeTile(tile) ? TRACK_BIT_NONE : GetTileRailTracks(tile);
 	if (tracks == TRACK_BIT_X) {
 		float climb = (corner_z[CORNER_W] + corner_z[CORNER_S] - corner_z[CORNER_N] - corner_z[CORNER_E]) / (2 * TILE);
 		smooth = {-2 * TRACK_SMOOTH_LENGTH, (1 - climb) * TRACK_SMOOTH_LENGTH};
@@ -1076,7 +1239,9 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	}
 
 	bool boxes = dist <= BOX_DIST;
-	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z, boxes, smooth);
+	/* Bridges are seen from further away. */
+	bool bridge = IsBridgeAbove(tile) || IsBridgeTile(tile);
+	const GroundTexture &tex = this->GetGroundTexture(tile, raw_z, boxes || bridge, smooth);
 	float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
 	float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
 
@@ -1111,7 +1276,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	}
 
 	/* Sides of foundations, down to the ground around them. */
-	if (z != raw_z || slope != raw_slope) {
+	if (!tunnel && (z != raw_z || slope != raw_slope)) {
 		static const std::array<std::pair<Corner, Corner>, 4> edges = {{{CORNER_N, CORNER_W}, {CORNER_W, CORNER_S}, {CORNER_S, CORNER_E}, {CORNER_E, CORNER_N}}};
 		for (auto [a, b] : edges) {
 			float ga = static_cast<float>(raw_z + GetSlopePixelZInCorner(RemoveHalftileSlope(raw_slope), a));
@@ -1121,10 +1286,19 @@ void Renderer::AddTile(TileIndex tile, float dist)
 		}
 	}
 
-	this->AddTrack(tile, corner_z, split_we, dist);
+	this->AddTrack(tile, tracks, corner_z, split_we, dist);
+	if (tunnel) this->AddTunnelPortal(tile, raw_z);
+	if (IsBridgeTile(tile)) this->AddBridgeRamp(tile, raw_z, corner_z, split_we, dist);
+	if (IsBridgeAbove(tile)) this->AddBridgeMiddle(tile, corner_z, split_we, dist);
+	if (boxes && IsLevelCrossingTile(tile)) this->AddCrossing(tile, z);
 	if (boxes) {
 		for (const BoxSpriteToDraw &box : this->box_sprites) {
+			if (box.bridge) continue;
 			switch (GetTileType(tile)) {
+				case MP_TUNNELBRIDGE:
+					/* Ramps and tunnel portals are drawn as a whole. */
+					break;
+
 				case MP_TREES:
 					this->AddBillboard(box);
 					break;
@@ -1157,6 +1331,11 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					if (!box.child && this->AddSignal(tile, box)) break;
 					[[fallthrough]];
 
+				case MP_ROAD:
+					/* The lights of level crossings are drawn whole, see AddCrossing. */
+					if (IsLevelCrossingTile(tile)) break;
+					[[fallthrough]];
+
 				default:
 					if (box.child) break;
 					/* Fences along the edges of the tile don't map well onto their thin boxes; leave them out. */
@@ -1185,22 +1364,40 @@ void Renderer::AddTile(TileIndex tile, float dist)
  */
 void Renderer::AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout)
 {
-	std::array<Vec3, 4> world;
-	for (size_t i = 0; i < pts.size(); i++) world[i] = pl.ToWorld(pts[i]);
+	std::array<Vec3, 4> world, pictured;
+	for (size_t i = 0; i < pts.size(); i++) {
+		world[i] = pl.ToWorld(pts[i]);
+		pictured[i] = shown(pts[i]);
+	}
+	this->AddTexturedFace(tex, pl.sx, pl.sy, std::span(world).first(pts.size()), std::span(pictured).first(pts.size()), pl.Turn(normal), cutout);
+}
+
+/**
+ * Add a flat side of a thing in the world, dressed in a sprite: each corner gets the colour of the sprite where
+ * the isometric view draws a point, see #RemapCoords.
+ * @param tex The texture of the sprite.
+ * @param sx Screen column where the viewport draws the sprite, in normal zoom pixels.
+ * @param sy Screen row where the viewport draws the sprite, in normal zoom pixels.
+ * @param world The corners of the side in the world, in order around it; at most four.
+ * @param shown For each corner, the point whose picture it gets.
+ * @param normal Direction the side faces; sides facing away from the camera are left out.
+ * @param cutout Whether pixels where the sprite is transparent are left out.
+ */
+void Renderer::AddTexturedFace(const GroundTexture &tex, float sx, float sy, std::span<const Vec3> world, std::span<const Vec3> shown, const Vec3 &normal, bool cutout)
+{
 	/* Scaling the heights tilts slanted sides; take the normal from the corners, facing the way it should. */
 	Vec3 n = (world[1] - world[0]).Cross(world[2] - world[0]);
-	Vec3 want = pl.Turn(normal);
-	if (n.Dot(want) < 0) n = n * -1;
+	if (n.Dot(normal) < 0) n = n * -1;
 	if (n.Dot(n) == 0) return;
 	if ((this->cam.pos - world[0]).Dot(n) <= 0) return;
 	n = n.Normalised();
 
 	std::array<ClipVertex, 4> v;
-	for (size_t i = 0; i < pts.size(); i++) {
-		Vec3 m = shown(pts[i]);
+	for (size_t i = 0; i < world.size(); i++) {
+		const Vec3 &m = shown[i];
 		v[i].c = this->cam.ToCamera(world[i]);
-		v[i].a[0] = 2.0f * (m.y - m.x) - pl.sx;
-		v[i].a[1] = (m.x + m.y - m.z) - pl.sy;
+		v[i].a[0] = 2.0f * (m.y - m.x) - sx;
+		v[i].a[1] = (m.x + m.y - m.z) - sy;
 		/* The fine pattern runs along the side. */
 		if (std::abs(n.z) > 0.7f) {
 			v[i].a[2] = world[i].x;
@@ -1211,7 +1408,7 @@ void Renderer::AddSpriteFace(const GroundTexture &tex, const Placement &pl, std:
 		}
 	}
 	Paint paint = {&tex, {}, Shade(n), 0, 1.0f, cutout};
-	for (size_t i = 1; i + 1 < pts.size(); i++) this->AddTriangle({v[0], v[i], v[i + 1]}, paint);
+	for (size_t i = 1; i + 1 < world.size(); i++) this->AddTriangle({v[0], v[i], v[i + 1]}, paint);
 }
 
 /**
@@ -2031,6 +2228,446 @@ bool Renderer::AddSignal(TileIndex tile, const BoxSpriteToDraw &box)
 	return false;
 }
 
+
+/**
+ * Add the warning lights of a level crossing: a post at each side of the road before and after the track, with a
+ * cross on top and two lamps towards the road, red when the crossing is closed.
+ * @param tile The level crossing.
+ * @param z Height of the crossing.
+ */
+void Renderer::AddCrossing(TileIndex tile, int z)
+{
+	const bool barred = IsCrossingBarred(tile);
+	const Axis road = GetCrossingRoadAxis(tile);
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	/* Coordinates along the road and across it. */
+	auto point = [&](float a, float c, float h) { return road == AXIS_X ? Vec3{x0 + a, y0 + c, z + h} : Vec3{x0 + c, y0 + a, z + h}; };
+
+	for (float a : {CROSSING_POST_ALONG, TILE - CROSSING_POST_ALONG}) {
+		/* Towards the road traffic coming to the track. */
+		const float out = a < TILE / 2 ? -1.0f : 1.0f;
+		for (float c : {CROSSING_POST_ACROSS, TILE - CROSSING_POST_ACROSS}) {
+			const Vec3 foot = point(a, c, 0);
+			const Vec3 face = point(out, 0, 0) - point(0, 0, 0);
+			const Vec3 side = point(0, 1, 0) - point(0, 0, 0);
+			auto block = [&](const Vec3 &centre, float half_face, float half_side, float z0, float z1, const RGB &colour) {
+				const Vec3 lo = centre - face * half_face - side * half_side;
+				const Vec3 hi = centre + face * half_face + side * half_side;
+				this->AddFlatBox({std::min(lo.x, hi.x), std::min(lo.y, hi.y), centre.z + z0}, {std::max(lo.x, hi.x), std::max(lo.y, hi.y), centre.z + z1}, colour);
+			};
+			block(foot, 0.12f, 0.12f, 0, CROSSING_POST_HEIGHT, SIGNAL_POST_COLOUR);
+			/* The lamps, side by side. */
+			const float lamp_z = CROSSING_POST_HEIGHT - 1.6f;
+			block(foot + face * 0.15f, 0.15f, 0.95f, lamp_z - 0.45f, lamp_z + 0.45f, SIGNAL_HEAD_COLOUR);
+			for (float w : {-0.5f, 0.5f}) {
+				const Vec3 c = foot + face * 0.31f + side * w + Vec3{0, 0, lamp_z};
+				const Vec3 dw = side * (SIGNAL_LAMP_SIZE * 0.4f);
+				const Vec3 dh = {0, 0, SIGNAL_LAMP_SIZE * 0.4f};
+				this->AddFlatQuad({c - dw - dh, c + dw - dh, c + dw + dh, c - dw + dh}, barred ? SIGNAL_RED_LIT : SIGNAL_RED_DARK, 1.0f, barred);
+			}
+			/* The cross on top. */
+			const Vec3 mid = foot + face * 0.14f + Vec3{0, 0, CROSSING_POST_HEIGHT - 0.4f};
+			for (float tilt : {-1.0f, 1.0f}) {
+				const Vec3 arm = (side + Vec3{0, 0, tilt * 0.6f}).Normalised() * 1.1f;
+				const Vec3 width = (side * (-tilt * 0.6f) + Vec3{0, 0, 1}).Normalised() * 0.18f;
+				this->AddFlatQuad({mid - arm - width, mid + arm - width, mid + arm + width, mid - arm + width}, CROSSING_CROSS_COLOUR, 1.0f);
+			}
+		}
+	}
+}
+
+/**
+ * Find where a side of a bridge stands across the bridge, from the bottom of its sprite, which stands on the deck.
+ * @param tex The texture of the sprite of the side, see #Renderer::GetBoxTexture.
+ * @param sx Screen column where the viewport draws the sprite, in normal zoom pixels.
+ * @param sy Screen row where the viewport draws the sprite, in normal zoom pixels.
+ * @param axis The axis of the bridge.
+ * @param deck Height of the deck.
+ * @return Where the side stands: its y for a bridge along the x axis, its x otherwise; nothing when the sprite has no pixels.
+ */
+static std::optional<float> FindBridgeSide(const GroundTexture &tex, float sx, float sy, Axis axis, float deck)
+{
+	const Picture &pic = tex.levels[0];
+	if (pic.alpha.empty()) return std::nullopt;
+	std::vector<float> across;
+	for (int x = 0; x < pic.width; x++) {
+		for (int y = pic.height - 1; y >= 0; y--) {
+			if (pic.alpha[static_cast<size_t>(y) * pic.width + x] < 0.5f) continue;
+			/* The isometric view draws a point at the column 2 * (y - x) and the row x + y - z. */
+			const float col = x + tex.left + 0.5f + sx;
+			const float sum = y + tex.top + 0.5f + sy + deck;
+			across.push_back(axis == AXIS_X ? (sum + col / 2) / 2 : (sum - col / 2) / 2);
+			break;
+		}
+	}
+	if (across.empty()) return std::nullopt;
+	std::nth_element(across.begin(), across.begin() + across.size() / 2, across.end());
+	return across[across.size() / 2];
+}
+
+/**
+ * Get the texture of a side of a bridge, a cut-out of thin lines along the bridge and up. In the sprite, lines along
+ * the bridge are steps of pixels, which would be teeth in 3D. The opacity is averaged along the bridge over a whole
+ * step, which makes them straight, and raised a little, so lines a pixel thin stay.
+ * @param image The sprite of the side.
+ * @param pal Its palette.
+ * @param axis The axis of the bridge.
+ * @return The texture; without any pixels when the sprite has none.
+ */
+const GroundTexture &Renderer::GetBridgeSideTexture(SpriteID image, PaletteID pal, Axis axis)
+{
+	/* Starting with a marker that no other texture has. */
+	this->key.clear();
+	this->key.push_back(INT32_MIN + 1);
+	this->key.push_back(image & SPRITE_MASK);
+	this->key.push_back(pal);
+	this->key.push_back(axis);
+	auto it = this->textures.find(this->key);
+	if (it != this->textures.end()) return it->second;
+	GroundTexture &tex = this->textures[this->key];
+
+	const RawSprite &raw = this->GetRawSprite(image & SPRITE_MASK);
+	if (raw.pixels.empty()) return tex;
+	/* Room around the sprite for the averaging to spread into. */
+	constexpr int MARGIN = 2;
+	Picture painted;
+	painted.width = raw.width + 2 * MARGIN;
+	painted.height = raw.height + 2 * MARGIN;
+	painted.pixels.assign(static_cast<size_t>(painted.width) * painted.height, {0, 0, 0});
+	std::vector<float> painted_alpha(painted.pixels.size(), 0.0f);
+	PaintSprite(painted, painted_alpha, raw, pal, MARGIN, MARGIN, false);
+
+	/* Along the bridge, the isometric view goes two columns and a row per unit. */
+	constexpr int SAMPLES = 16;
+	const float dx = 2.0f;
+	const float dy = axis == AXIS_X ? -1.0f : 1.0f;
+	tex.left = raw.x_offs - MARGIN;
+	tex.top = raw.y_offs - MARGIN;
+	Picture &pic = tex.levels[0];
+	pic.width = painted.width;
+	pic.height = painted.height;
+	pic.pixels.assign(painted.pixels.size(), {0, 0, 0});
+	std::vector<float> alpha(painted.pixels.size(), 0.0f);
+	for (int y = 0; y < pic.height; y++) {
+		for (int x = 0; x < pic.width; x++) {
+			RGB sum = {0, 0, 0};
+			float alpha_sum = 0;
+			for (int i = 0; i < SAMPLES; i++) {
+				const float t = (i + 0.5f) / SAMPLES - 0.5f;
+				const int px = static_cast<int>(std::floor(x + 0.5f + dx * t));
+				const int py = static_cast<int>(std::floor(y + 0.5f + dy * t));
+				if (px < 0 || py < 0 || px >= pic.width || py >= pic.height) continue;
+				const size_t idx = static_cast<size_t>(py) * pic.width + px;
+				sum = sum + painted.pixels[idx];
+				alpha_sum += painted_alpha[idx];
+			}
+			const size_t idx = static_cast<size_t>(y) * pic.width + x;
+			pic.pixels[idx] = sum * (1.0f / SAMPLES);
+			alpha[idx] = alpha_sum / SAMPLES;
+		}
+	}
+	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, false);
+	for (Picture &level : tex.levels) {
+		for (float &a : level.alpha) a = std::min(1.0f, a * BRIDGE_SIDE_BOOST);
+	}
+	return tex;
+}
+
+/**
+ * Add a side of a bridge, standing on the edge of its deck: an upright cut-out along the bridge, dressed in the
+ * sprite of the side, with its heights scaled like those of buildings and vehicles. It is seen from both sides.
+ * @param tex The texture of the side, see #Renderer::GetBridgeSideTexture.
+ * @param sx Screen column where the viewport draws the sprite, in normal zoom pixels.
+ * @param sy Screen row where the viewport draws the sprite, in normal zoom pixels.
+ * @param axis The axis of the bridge.
+ * @param plane Where the side stands across the bridge: its y for a bridge along the x axis, its x otherwise.
+ * @param shown_plane Where the side the sprite shows stands; for a side the sprite does not show, the opposite one.
+ * @param along Where the side starts and ends along the bridge.
+ * @param deck Height of the deck where the side starts and ends.
+ */
+void Renderer::AddBridgeSide(const GroundTexture &tex, float sx, float sy, Axis axis, float plane, float shown_plane, std::pair<float, float> along, std::pair<float, float> deck)
+{
+	std::optional<int> top = TopRow(tex);
+	if (!top.has_value()) return;
+	/* The isometric view draws a point at the row x + y - z; that gives how high the top of the sprite is above the deck. */
+	const float height = std::max(along.first - deck.first, along.second - deck.second) + shown_plane - *top - sy;
+	if (height < 1) return;
+	/* Some sides reach down the edge of the deck. */
+	const float low = -DECK_DEPTH / BUILDING_HEIGHT;
+
+	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
+	const std::array<Vec3, 4> world = {
+		point(along.first, plane, deck.first + low * BUILDING_HEIGHT), point(along.second, plane, deck.second + low * BUILDING_HEIGHT),
+		point(along.second, plane, deck.second + height * BUILDING_HEIGHT), point(along.first, plane, deck.first + height * BUILDING_HEIGHT),
+	};
+	const std::array<Vec3, 4> shown = {
+		point(along.first, shown_plane, deck.first + low), point(along.second, shown_plane, deck.second + low),
+		point(along.second, shown_plane, deck.second + height), point(along.first, shown_plane, deck.first + height),
+	};
+	const Vec3 normal = point(0, 1, 0);
+	this->AddTexturedFace(tex, sx, sy, world, shown, normal, true);
+	this->AddTexturedFace(tex, sx, sy, world, shown, normal * -1, true);
+}
+
+/**
+ * Add the part of a bridge above a tile: its deck with the track, dressed in the sprites of the bridge seen from
+ * above, its sides cut out of the sprite of the near side, and pillars where the game draws them.
+ * @param tile The tile under the bridge.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ * @param dist Distance of the tile from the camera.
+ */
+void Renderer::AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
+{
+	const TileIndex head = GetSouthernBridgeEnd(tile);
+	const Axis axis = GetBridgeAxis(tile);
+	const float deck = static_cast<float>(GetBridgePixelHeight(head));
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	/* Coordinates along and across the bridge. */
+	const float a0 = axis == AXIS_X ? x0 : y0;
+	const float c0 = axis == AXIS_X ? y0 : x0;
+	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
+
+	/* The sprites of the bridge: the near side, what is drawn with the deck, like the far side, and pillars below the deck. */
+	std::vector<const BoxSpriteToDraw *> on_deck;
+	const BoxSpriteToDraw *near_side = nullptr, *pillar = nullptr;
+	for (const BoxSpriteToDraw &box : this->box_sprites) {
+		if (!box.bridge) continue;
+		if (box.zmax < deck - 1) {
+			if (pillar == nullptr) pillar = &box;
+			continue;
+		}
+		const int across = (axis == AXIS_X ? box.ymin : box.xmin) - static_cast<int>(c0);
+		const bool side = (axis == AXIS_X ? box.ymax - box.ymin : box.xmax - box.xmin) == 0 && (axis == AXIS_X ? box.xmax - box.xmin : box.ymax - box.ymin) >= static_cast<int>(TILE_SIZE / 2);
+		/* The near side, with what is drawn in its box. */
+		if (side && across >= static_cast<int>(TILE_SIZE / 2)) {
+			if (!box.child) near_side = &box;
+			continue;
+		}
+		on_deck.push_back(&box);
+	}
+	if (on_deck.empty()) return;
+
+	/* Where the sides stand: the near one where the bottom of its sprite is, the far one as far from the other edge of the tile. */
+	float near_plane = c0 + BRIDGE_SIDE_PLANE;
+	const GroundTexture *side = nullptr;
+	float side_x = 0, side_y = 0;
+	if (near_side != nullptr) {
+		side_x = static_cast<float>(near_side->x) / ZOOM_BASE;
+		side_y = static_cast<float>(near_side->y) / ZOOM_BASE;
+		std::optional<float> found = FindBridgeSide(this->GetBoxTexture(near_side->image, near_side->pal, false), side_x, side_y, axis, deck);
+		if (found.has_value()) near_plane = std::clamp(*found, c0 + TILE / 2 + 2, c0 + TILE);
+		side = &this->GetBridgeSideTexture(near_side->image, near_side->pal, axis);
+	}
+	const float far_plane = 2 * c0 + TILE - near_plane;
+	const float c_lo = std::min(c0 + BRIDGE_DECK_EDGE, far_plane - 0.5f);
+	const float c_hi = std::max(c0 + TILE - BRIDGE_DECK_EDGE, near_plane + 0.5f);
+
+	/* The deck, with the track on it. */
+	const Point origin = RemapCoords(TileX(tile) * TILE_SIZE, TileY(tile) * TILE_SIZE, static_cast<int>(deck));
+	const GroundTexture &tex = this->GetCompositeTexture(on_deck, origin);
+	const float sx = static_cast<float>(origin.x) / ZOOM_BASE;
+	const float sy = static_cast<float>(origin.y) / ZOOM_BASE;
+	/* The sprites leave out the near edge of the deck, under the near side; the near half gets the picture of the far half. */
+	const float c_mid = c0 + TILE / 2;
+	const std::array<Vec3, 4> far_half = {point(a0, c_lo, deck), point(a0 + TILE, c_lo, deck), point(a0 + TILE, c_mid, deck), point(a0, c_mid, deck)};
+	const std::array<Vec3, 4> near_half = {point(a0, c_mid, deck), point(a0 + TILE, c_mid, deck), point(a0 + TILE, c_hi, deck), point(a0, c_hi, deck)};
+	const std::array<Vec3, 4> near_shown = {point(a0, c_mid, deck), point(a0 + TILE, c_mid, deck), point(a0 + TILE, 2 * c_mid - c_hi, deck), point(a0, 2 * c_mid - c_hi, deck)};
+	this->AddTexturedFace(tex, sx, sy, far_half, far_half, {0, 0, 1}, false);
+	this->AddTexturedFace(tex, sx, sy, near_half, near_shown, {0, 0, 1}, false);
+	if (GetTunnelBridgeTransportType(head) == TRANSPORT_RAIL) {
+		std::array<float, CORNER_END> flat;
+		flat.fill(deck);
+		this->AddTrack(tile, TrackToTrackBits(AxisToTrack(axis)), flat, true, dist);
+	}
+
+	/* Its edges and its bottom, in the colour of the pillars. */
+	const RGB colour = pillar != nullptr ? this->GetBoxTexture(pillar->image, pillar->pal, false).mean : tex.mean * 0.8f;
+	const float under = deck - DECK_DEPTH;
+	for (float c : {c_lo, c_hi}) {
+		this->AddFlatQuad({point(a0, c, under), point(a0 + TILE, c, under), point(a0 + TILE, c, deck), point(a0, c, deck)}, colour, 1.0f);
+	}
+	this->AddFlatQuad({point(a0, c_lo, under), point(a0 + TILE, c_lo, under), point(a0 + TILE, c_hi, under), point(a0, c_hi, under)}, colour * 0.55f, 1.0f, true);
+
+	/* Its sides; the far one, seen from the inside in the sprites, gets the picture of the near one. */
+	if (side != nullptr) {
+		this->AddBridgeSide(*side, side_x, side_y, axis, near_plane, near_plane, {a0, a0 + TILE}, {deck, deck});
+		this->AddBridgeSide(*side, side_x, side_y, axis, far_plane, near_plane, {a0, a0 + TILE}, {deck, deck});
+	}
+
+	/* Two pillars with a beam across them, under the middle of the tile. */
+	if (pillar != nullptr) this->AddBridgePillars(tile, axis, a0 + TILE / 2, {c_lo, c_hi}, under, corner_z, split_we, colour);
+}
+
+/**
+ * Add the pillars under a bridge, with a beam across them below the deck.
+ * @param tile The tile they stand on.
+ * @param axis The axis of the bridge.
+ * @param along Where they stand along the bridge.
+ * @param across Where the deck starts and ends across the bridge.
+ * @param under Height of the bottom of the deck.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ * @param colour Their colour.
+ */
+void Renderer::AddBridgePillars(TileIndex tile, Axis axis, float along, std::pair<float, float> across, float under, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
+	const float half = PILLAR_SIZE / 2;
+	for (float c : {across.first + half + 0.3f, across.second - half - 0.3f}) {
+		const Vec3 p = point(along, c, 0);
+		const float ground = SurfaceZ(corner_z, split_we, p.x - x0, p.y - y0);
+		if (ground > under - 0.5f) continue;
+		this->AddFlatBox({p.x - half, p.y - half, ground - 0.5f}, {p.x + half, p.y + half, under}, colour);
+	}
+	const Vec3 lo = point(along - half, across.first, under - 1.2f);
+	const Vec3 hi = point(along + half, across.second, under);
+	this->AddFlatBox({std::min(lo.x, hi.x), std::min(lo.y, hi.y), lo.z}, {std::max(lo.x, hi.x), std::max(lo.y, hi.y), hi.z}, colour);
+}
+
+/**
+ * Add the ramp of a bridge: a deck like that of the bridge, rising from the ground to the bridge with the track on
+ * it and dressed in the sprites of the ramp, on pillars where it meets the bridge.
+ * @param tile The bridge ramp.
+ * @param ground_z Height of the tile as the viewport uses it, see #GetTilePixelSlope.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ * @param dist Distance of the tile from the camera.
+ */
+void Renderer::AddBridgeRamp(TileIndex tile, int ground_z, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
+{
+	const DiagDirection dir = GetTunnelBridgeDirection(tile);
+	const Axis axis = DiagDirToAxis(dir);
+	const float deck = static_cast<float>(GetBridgePixelHeight(tile));
+	const float outer = HasBridgeFlatRamp(GetTileSlope(tile), axis) ? deck : deck - TILE_HEIGHT;
+
+	/* The track; the deck is as high as the bridge at the edge towards it. */
+	static const std::array<std::pair<Corner, Corner>, DIAGDIR_END> inner_corners = {{
+		{CORNER_N, CORNER_E}, {CORNER_E, CORNER_S}, {CORNER_W, CORNER_S}, {CORNER_N, CORNER_W},
+	}};
+	std::array<float, CORNER_END> ramp_z;
+	ramp_z.fill(outer);
+	ramp_z[inner_corners[dir].first] = deck;
+	ramp_z[inner_corners[dir].second] = deck;
+	this->AddTrack(tile, GetTileRailTracks(tile), ramp_z, true, dist);
+
+	/* Coordinates along and across the bridge, and the height of the deck where the tile starts and ends along it. */
+	const float a0 = static_cast<float>((axis == AXIS_X ? TileX(tile) : TileY(tile)) * TILE_SIZE);
+	const float c0 = static_cast<float>((axis == AXIS_X ? TileY(tile) : TileX(tile)) * TILE_SIZE);
+	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
+	const bool rising = dir == DIAGDIR_SE || dir == DIAGDIR_SW;
+	const float z0 = rising ? outer : deck;
+	const float z1 = rising ? deck : outer;
+	const float c_lo = c0 + RAMP_EDGE;
+	const float c_mid = c0 + TILE / 2;
+	const float c_hi = c0 + TILE - RAMP_EDGE;
+
+	/* The deck; its near edge is outside the sprites, so the near half gets the picture of the far half. */
+	std::vector<const BoxSpriteToDraw *> parts;
+	for (const BoxSpriteToDraw &box : this->box_sprites) {
+		if (!box.bridge) parts.push_back(&box);
+	}
+	RGB colour = FOUNDATION_COLOUR;
+	const std::array<Vec3, 4> far_half = {point(a0, c_lo, z0), point(a0 + TILE, c_lo, z1), point(a0 + TILE, c_mid, z1), point(a0, c_mid, z0)};
+	const std::array<Vec3, 4> near_half = {point(a0, c_mid, z0), point(a0 + TILE, c_mid, z1), point(a0 + TILE, c_hi, z1), point(a0, c_hi, z0)};
+	if (parts.empty()) {
+		this->AddFlatQuad(far_half, colour, 1.0f);
+		this->AddFlatQuad(near_half, colour, 1.0f);
+	} else {
+		const Point origin = RemapCoords(TileX(tile) * TILE_SIZE, TileY(tile) * TILE_SIZE, ground_z);
+		const GroundTexture &tex = this->GetCompositeTexture(parts, origin);
+		const float sx = static_cast<float>(origin.x) / ZOOM_BASE;
+		const float sy = static_cast<float>(origin.y) / ZOOM_BASE;
+		const std::array<Vec3, 4> near_shown = {point(a0, c_mid, z0), point(a0 + TILE, c_mid, z1), point(a0 + TILE, 2 * c_mid - c_hi, z1), point(a0, 2 * c_mid - c_hi, z0)};
+		this->AddTexturedFace(tex, sx, sy, far_half, far_half, {0, 0, 1}, false);
+		this->AddTexturedFace(tex, sx, sy, near_half, near_shown, {0, 0, 1}, false);
+		colour = tex.mean * 0.8f;
+	}
+
+	/* Its edges and its bottom. */
+	const float d = DECK_DEPTH;
+	for (float c : {c_lo, c_hi}) {
+		this->AddFlatQuad({point(a0, c, z0 - d), point(a0 + TILE, c, z1 - d), point(a0 + TILE, c, z1), point(a0, c, z0)}, colour, 1.0f);
+	}
+	this->AddFlatQuad({point(a0, c_lo, z0 - d), point(a0 + TILE, c_lo, z1 - d), point(a0 + TILE, c_hi, z1 - d), point(a0, c_hi, z0 - d)}, colour * 0.55f, 1.0f, true);
+	const float a_inner = rising ? a0 + TILE : a0;
+	this->AddFlatQuad({point(a_inner, c_lo, deck - d), point(a_inner, c_hi, deck - d), point(a_inner, c_hi, deck), point(a_inner, c_lo, deck)}, colour, 1.0f);
+
+	/* The pillars where it meets the bridge. */
+	this->AddBridgePillars(tile, axis, rising ? a_inner - PILLAR_SIZE : a_inner + PILLAR_SIZE, {c_lo, c_hi}, deck - d, corner_z, split_we, colour);
+}
+
+/**
+ * Add the portal of a tunnel where the hill starts: a face of stone with an arched opening into the dark,
+ * and walls along the track, where the 3D view cuts the hill away to keep the track level, see SetTunnelGround.
+ * @param tile The tunnel entrance.
+ * @param z Height of the bottom of the tile.
+ */
+void Renderer::AddTunnelPortal(TileIndex tile, int z)
+{
+	static const std::array<std::pair<float, float>, DIAGDIR_END> into = {{{-1, 0}, {0, 1}, {1, 0}, {0, -1}}};
+	const auto [ix, iy] = into[GetTunnelBridgeDirection(tile)];
+	const Vec3 in = {ix, iy, 0};
+	const Vec3 side = {-iy, ix, 0};
+	const Vec3 face = Vec3{TileX(tile) * TILE + TILE / 2, TileY(tile) * TILE + TILE / 2, static_cast<float>(z)} + in * (TILE / 2);
+	/* A point s to the side and h above the bottom of the portal, d into the hill. */
+	auto at = [&](float s, float h, float d = 0) { return face + side * s + in * d + Vec3{0, 0, h}; };
+	const float half = TILE / 2;
+
+	/* The arch of the opening, from one side over the top to the other, and the ring of stones around it. */
+	constexpr int SEGMENTS = 8;
+	std::array<std::pair<float, float>, SEGMENTS + 1> arch, ring;
+	for (int i = 0; i <= SEGMENTS; i++) {
+		const float t = static_cast<float>(M_PI) * i / SEGMENTS;
+		arch[i] = {-std::cos(t) * PORTAL_OPENING, PORTAL_SPRING + std::sin(t) * PORTAL_OPENING};
+		ring[i] = {-std::cos(t) * (PORTAL_OPENING + PORTAL_RING), PORTAL_SPRING + std::sin(t) * (PORTAL_OPENING + PORTAL_RING)};
+	}
+	const float edge = PORTAL_OPENING + PORTAL_RING;
+
+	/* The face: beside the ring, from the ground up, and above it. */
+	this->AddFlatQuad({at(-half, 0), at(-edge, 0), at(-edge, PORTAL_HEIGHT), at(-half, PORTAL_HEIGHT)}, PORTAL_COLOUR, 1.0f);
+	this->AddFlatQuad({at(edge, 0), at(half, 0), at(half, PORTAL_HEIGHT), at(edge, PORTAL_HEIGHT)}, PORTAL_COLOUR, 1.0f);
+	for (int i = 0; i < SEGMENTS; i++) {
+		const auto [s0, h0] = ring[i];
+		const auto [s1, h1] = ring[i + 1];
+		this->AddFlatQuad({at(s0, h0), at(s1, h1), at(s1, PORTAL_HEIGHT), at(s0, PORTAL_HEIGHT)}, PORTAL_COLOUR, 1.0f);
+	}
+	/* The ring, down the sides of the opening and over it. */
+	this->AddFlatQuad({at(-edge, 0), at(-PORTAL_OPENING, 0), at(-PORTAL_OPENING, PORTAL_SPRING), at(-edge, PORTAL_SPRING)}, PORTAL_RING_COLOUR, 1.0f);
+	this->AddFlatQuad({at(PORTAL_OPENING, 0), at(edge, 0), at(edge, PORTAL_SPRING), at(PORTAL_OPENING, PORTAL_SPRING)}, PORTAL_RING_COLOUR, 1.0f);
+	for (int i = 0; i < SEGMENTS; i++) {
+		this->AddFlatQuad({at(arch[i].first, arch[i].second), at(ring[i].first, ring[i].second), at(ring[i + 1].first, ring[i + 1].second), at(arch[i + 1].first, arch[i + 1].second)}, PORTAL_RING_COLOUR, 1.0f);
+	}
+
+	/* The walls and floor of the opening, going into the dark. */
+	this->AddFlatQuad({at(-PORTAL_OPENING, 0), at(-PORTAL_OPENING, 0, PORTAL_DEPTH), at(-PORTAL_OPENING, PORTAL_SPRING, PORTAL_DEPTH), at(-PORTAL_OPENING, PORTAL_SPRING)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+	this->AddFlatQuad({at(PORTAL_OPENING, 0), at(PORTAL_OPENING, 0, PORTAL_DEPTH), at(PORTAL_OPENING, PORTAL_SPRING, PORTAL_DEPTH), at(PORTAL_OPENING, PORTAL_SPRING)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+	this->AddFlatQuad({at(-PORTAL_OPENING, 0), at(PORTAL_OPENING, 0), at(PORTAL_OPENING, 0, PORTAL_DEPTH), at(-PORTAL_OPENING, 0, PORTAL_DEPTH)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+	std::array<Vec3, SEGMENTS + 3> back;
+	back[0] = at(-PORTAL_OPENING, 0, PORTAL_DEPTH);
+	back[1] = at(PORTAL_OPENING, 0, PORTAL_DEPTH);
+	for (int i = 0; i < SEGMENTS; i++) {
+		this->AddFlatQuad({at(arch[i].first, arch[i].second), at(arch[i + 1].first, arch[i + 1].second), at(arch[i + 1].first, arch[i + 1].second, PORTAL_DEPTH), at(arch[i].first, arch[i].second, PORTAL_DEPTH)}, TUNNEL_WALL_COLOUR, 1.0f, true);
+	}
+	for (int i = 0; i <= SEGMENTS; i++) back[i + 2] = at(arch[SEGMENTS - i].first, arch[SEGMENTS - i].second, PORTAL_DEPTH);
+	this->AddFlatPolygon(back, TUNNEL_DARK, 1.0f, true);
+
+	/* The top of the face, where it stands above the hill. */
+	constexpr float THICK = 1.5f;
+	const float hill = static_cast<float>(TILE_HEIGHT);
+	this->AddFlatQuad({at(-half, PORTAL_HEIGHT), at(half, PORTAL_HEIGHT), at(half, PORTAL_HEIGHT, THICK), at(-half, PORTAL_HEIGHT, THICK)}, PORTAL_RING_COLOUR, 1.0f);
+	this->AddFlatQuad({at(-half, hill, THICK), at(half, hill, THICK), at(half, PORTAL_HEIGHT, THICK), at(-half, PORTAL_HEIGHT, THICK)}, PORTAL_COLOUR, 1.0f);
+	for (float s : {-half, half}) {
+		this->AddFlatQuad({at(s, hill), at(s, hill, THICK), at(s, PORTAL_HEIGHT, THICK), at(s, PORTAL_HEIGHT)}, PORTAL_COLOUR, 1.0f);
+		/* The wall along the track, up to the slope of the hill beside it. */
+		this->AddFlatQuad({at(s, 0, -TILE), at(s, 0), at(s, hill + 0.8f), at(s, 0.8f, -TILE)}, PORTAL_COLOUR, 1.0f);
+	}
+}
+
 /** Add the trains and road vehicles around the camera, as boxes dressed in their sprites. */
 void Renderer::AddVehicles()
 {
@@ -2080,15 +2717,14 @@ void Renderer::AddVehicles()
 /**
  * Add rails and sleepers on top of the ground, so they stay sharp up close.
  * @param tile The tile.
- * @param corner_z Height of the corners of the tile.
+ * @param tracks The track pieces.
+ * @param corner_z Height of the corners of the surface the track lies on.
  * @param split_we How the tile is split into triangles, see #SurfaceZ.
  * @param dist Distance of the tile from the camera.
  */
-void Renderer::AddTrack(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
+void Renderer::AddTrack(TileIndex tile, TrackBits tracks, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
 {
-	if (dist > RAIL_DIST) return;
-	TrackBits tracks = GetTileRailTracks(tile);
-	if (tracks == TRACK_BIT_NONE) return;
+	if (dist > RAIL_DIST || tracks == TRACK_BIT_NONE) return;
 
 	/* Ends of the track pieces, relative to the north corner: middles of the tile edges. */
 	static const std::array<std::array<float, 4>, TRACK_END> ends = {{

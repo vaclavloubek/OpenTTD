@@ -180,6 +180,31 @@ function CabTestAI::BuildPlane(cx, cy, pass)
 	return plane;
 }
 
+/** Raise the corners from (cx0, cy0) to (cx1, cy1) by one level. */
+function CabTestAI::RaiseCorners(cx0, cy0, cx1, cy1)
+{
+	for (local cy = cy0; cy <= cy1; cy++) {
+		for (local cx = cx0; cx <= cx1; cx++) {
+			if (!AITile.RaiseTile(AIMap.GetTileIndex(cx, cy), AITile.SLOPE_N)) AILog.Warning("raise " + cx + "," + cy + ": " + AIError.GetLastErrorString());
+		}
+	}
+}
+
+/** Rail bridge from a to b; the n-th of the bridge types that fit, fastest first (wrapping around). */
+function CabTestAI::BuildRailBridge(a, b, n)
+{
+	local len = AIMap.DistanceManhattan(a, b) + 1;
+	local types = AIBridgeList_Length(len);
+	types.Valuate(AIBridge.GetMaxSpeed);
+	types.Sort(AIList.SORT_BY_VALUE, false);
+	if (types.IsEmpty()) { AILog.Warning("no bridge of length " + len); return false; }
+	local type = types.Begin();
+	for (local i = 0; i < n % types.Count(); i++) type = types.Next();
+	local ok = this.Must(AIBridge.BuildBridge(AIVehicle.VT_RAIL, type, a, b), "bridge " + a + "-" + b);
+	if (ok) AILog.Info("BRIDGE " + a + "-" + b + " " + AIBridge.GetName(type, AIVehicle.VT_RAIL));
+	return ok;
+}
+
 function CabTestAI::Start()
 {
 	AICompany.SetName("Cab Test Rail");
@@ -203,10 +228,33 @@ function CabTestAI::Start()
 	local tB = AIMap.GetTileIndex(x1, y1 - 3);
 	local tDepot = AIMap.GetTileIndex(x0 - 1, y0);
 
+	/* A hill two levels high across the line along Y, for a tunnel from y0 + 4 to y0 + 10. */
+	this.RaiseCorners(x1 - 2, y0 + 5, x1 + 3, y0 + 10);
+	this.RaiseCorners(x1 - 1, y0 + 6, x1 + 2, y0 + 9);
+
+	/* Roads across the line: under the bridges, and over a level crossing. */
+	AIRoad.SetCurrentRoadType(AIRoadTypeList(AIRoad.ROADTRAMTYPES_ROAD).Begin());
+	this.Must(AIRoad.BuildRoad(AIMap.GetTileIndex(x0 + 12, y0 - 2), AIMap.GetTileIndex(x0 + 12, y0 + 2)), "road under bridge x");
+	this.Must(AIRoad.BuildRoad(AIMap.GetTileIndex(x1 - 2, y0 + 13), AIMap.GetTileIndex(x1 + 2, y0 + 13)), "road under bridge y");
+
 	this.Must(AIRail.BuildRailStation(tA, AIRail.RAILTRACK_NE_SW, 1, 4, AIStation.STATION_NEW), "station A");
-	for (local x = x0 + 4; x < x1; x++) this.Must(AIRail.BuildRailTrack(AIMap.GetTileIndex(x, y0), AIRail.RAILTRACK_NE_SW), "track x " + x);
+	for (local x = x0 + 4; x < x1; x++) {
+		if (x >= x0 + 10 && x <= x0 + 13) continue;
+		this.Must(AIRail.BuildRailTrack(AIMap.GetTileIndex(x, y0), AIRail.RAILTRACK_NE_SW), "track x " + x);
+	}
+	this.BuildRailBridge(AIMap.GetTileIndex(x0 + 10, y0), AIMap.GetTileIndex(x0 + 13, y0), 0);
+	this.Must(AIRoad.BuildRoad(AIMap.GetTileIndex(x0 + 16, y0 - 1), AIMap.GetTileIndex(x0 + 16, y0 + 1)), "level crossing");
 	this.Must(AIRail.BuildRailTrack(AIMap.GetTileIndex(x1, y0), AIRail.RAILTRACK_NE_SE), "corner");
-	for (local y = y0 + 1; y < y1 - 3; y++) this.Must(AIRail.BuildRailTrack(AIMap.GetTileIndex(x1, y), AIRail.RAILTRACK_NW_SE), "track y " + y);
+	for (local y = y0 + 1; y < y1 - 3; y++) {
+		if (y >= y0 + 4 && y <= y0 + 10) continue;
+		if (y >= y0 + 12 && y <= y0 + 15) continue;
+		this.Must(AIRail.BuildRailTrack(AIMap.GetTileIndex(x1, y), AIRail.RAILTRACK_NW_SE), "track y " + y);
+	}
+	if (this.Must(AITunnel.BuildTunnel(AIVehicle.VT_RAIL, AIMap.GetTileIndex(x1, y0 + 4)), "tunnel")) {
+		local end = AITunnel.GetOtherTunnelEnd(AIMap.GetTileIndex(x1, y0 + 4));
+		AILog.Info("TUNNEL " + AIMap.GetTileIndex(x1, y0 + 4) + " to " + AIMap.GetTileX(end) + "," + AIMap.GetTileY(end));
+	}
+	this.BuildRailBridge(AIMap.GetTileIndex(x1, y0 + 12), AIMap.GetTileIndex(x1, y0 + 15), 3);
 	this.Must(AIRail.BuildRailStation(tB, AIRail.RAILTRACK_NW_SE, 1, 4, AIStation.STATION_NEW), "station B");
 	this.Must(AIRail.BuildRailDepot(tDepot, tA), "depot");
 

@@ -1372,16 +1372,19 @@ void CollectTileGroundSprites(TileIndex tile, std::vector<GroundSpriteToDraw> &s
 		}
 	}
 	if (boxes != nullptr) {
+		/* The bridge above the tile is drawn last, starting with a flat empty box that separates it from the tile. */
+		bool bridge = false;
 		for (int i = 0; i < static_cast<int>(_vd.parent_sprites_to_draw.size()); i++) {
 			if (i == _vd.foundation[FOUNDATION_PART_NORMAL] || i == _vd.foundation[FOUNDATION_PART_HALFTILE]) continue;
 			const ParentSpriteToDraw &ps = _vd.parent_sprites_to_draw[i];
+			if (ps.image == SPR_EMPTY_BOUNDING_BOX && ps.xmax - ps.xmin == TILE_SIZE - 1 && ps.ymax - ps.ymin == TILE_SIZE - 1 && ps.zmax == ps.zmin) bridge = true;
 			if (ps.image == SPR_EMPTY_BOUNDING_BOX || ps.sub != nullptr || HasBit(ps.image, PALETTE_MODIFIER_TRANSPARENT)) continue;
-			boxes->push_back({ps.image, ps.pal, ps.x, ps.y, ps.xmin, ps.ymin, ps.zmin, ps.xmax, ps.ymax, ps.zmax, false});
+			boxes->push_back({ps.image, ps.pal, ps.x, ps.y, ps.xmin, ps.ymin, ps.zmin, ps.xmax, ps.ymax, ps.zmax, false, bridge});
 			for (int child = ps.first_child; child >= 0; child = _vd.child_screen_sprites_to_draw[child].next) {
 				const ChildScreenSpriteToDraw &cs = _vd.child_screen_sprites_to_draw[child];
 				if (cs.sub != nullptr || HasBit(cs.image, PALETTE_MODIFIER_TRANSPARENT)) continue;
 				boxes->push_back({cs.image, cs.pal, (cs.relative ? ps.left : ps.x) + cs.x, (cs.relative ? ps.top : ps.y) + cs.y,
-					ps.xmin, ps.ymin, ps.zmin, ps.xmax, ps.ymax, ps.zmax, true});
+					ps.xmin, ps.ymin, ps.zmin, ps.xmax, ps.ymax, ps.zmax, true, bridge});
 			}
 		}
 	}
