@@ -162,6 +162,26 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   jako šedé „šipky“ a budova nádraží jako vysoký sloup; opraveno novým rozpoznáním tvaru výše. Pak budova
   nádraží jako šikmá deska a návěstidla jako tři zelené obrázky nad sebou; opraveno tvarem nádraží a 3D návěstidly.
 
+### 3D pohled z letadla
+
+- Tlačítko **3D** funguje i u letadel a vrtulníků. Kamera je v kabině ve **skutečné herní výšce** letadla
+  (`z_pos` + 3 jednotky, na dráze tedy stejně vysoko jako u vlaku): rozjezd po dráze, stoupání, let, klesání a přistání.
+  Ve hře letadla stoupají i klesají strmě (o jednotku výšky na jednotku cesty, stoupání ze země do letové výšky
+  trvá asi 2 s), 3D pohled to ukazuje tak, jak to je.
+- Čím výš letadlo letí, tím víc se pohled dívá dolů (míří na zem asi 20 dlaždic před sebou, nejvýš o 0,5 rad
+  navíc k obvyklým 6°). Stoupání a klesání pohled naklání jen trochu (nejvýš 0,2 rad), jinak by se při vzletu
+  díval jen do nebe. Výška země pod letadlem se vyhlazuje na 2 dlaždice, aby pohled nekýval nad kopci.
+- Opar a dohled se posouvají o výšku nad zemí (nejvýš o 15 dlaždic), protože i zem přímo pod letadlem je daleko
+  od oka; do strany se berou i dlaždice, které z výšky vidět jsou (dřív v dolních rozích chyběly).
+- Na letištích se světla dráhy (sprity v prázdném boxu) vynechávají, postavená jako výřezy vypadala jako hromádky.
+  Hangáry hra kreslí jako přední a zadní stěnu v tenkých boxech; tvar budovy se proto hledá v celé dlaždici.
+  Zblízka (letadlo stojí u terminálu nebo hangáru) jsou budovy letiště rozmazané, jejich sprity jsou malé.
+- **Ostatní letadla** se ve 3D (z vlaku i z letadla) kreslí ve své herní výšce jako výřez otočený ke kameře,
+  se spritem letadla z té strany, ze které ho kamera vidí (1 z 8 směrů). Délka letadla letícího od mapy je ve
+  spritu nahoru, proto se výřez zespodu svisle zmenšuje (jinak by letadlo letící pryč stálo jako sloup).
+  Stíny a rotory vrtulníků se nekreslí.
+- Uložená hra na zkoušku: `kabina3d_letadlo.sav` (kopcovitá mapa, letadlo #1 druhé společnosti „Cab Test Rail“).
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt

@@ -52,6 +52,7 @@
 #include "vehicle_func.h"
 #include "train.h"
 #include "roadveh.h"
+#include "aircraft.h"
 
 #include "table/sprites.h"
 
@@ -70,6 +71,8 @@ constexpr float TILE = static_cast<float>(TILE_SIZE); ///< Size of a tile; as fl
 constexpr float VIEW_TILES = 56.0f; ///< How far the view reaches, in tiles.
 constexpr float FOG_START = 14.0f * TILE; ///< Distance where the haze starts.
 constexpr float FOG_END = VIEW_TILES * TILE; ///< Distance where everything has melted into the haze.
+constexpr float MAX_FOG_LIFT = 15.0f * TILE; ///< How much further away the haze starts at most when looking down from an aircraft, see #CabViewCamera::altitude.
+constexpr float AIRCRAFT_UNITS = 0.4f; ///< Size of a sprite pixel of an aircraft, in world units.
 constexpr float FOV_DEG = 64.0f; ///< Horizontal field of view.
 constexpr float PITCH_DEG = -6.0f; ///< How much the camera looks down.
 constexpr float NEAR = 0.5f; ///< Near clipping distance.
@@ -524,6 +527,8 @@ private:
 	Camera cam; ///< The current camera.
 	bool frame_valid = false; ///< Whether #frame holds a finished picture.
 	CabViewCamera frame_camera; ///< Camera of the picture in #frame.
+	float fog_start = FOG_START; ///< Distance where the haze starts in the current picture.
+	float fog_end = FOG_END; ///< Distance where everything has melted into the haze in the current picture.
 	uint32_t frame_id = 0; ///< Identification of the picture in #frame, see #DrawCabView3D.
 	float fixed_ms = 0; ///< Average time (in milliseconds) of the parts of making a picture that don't depend on its size.
 	float fill_ms = 0; ///< Average time (in milliseconds) filling a picture of the size of the view takes.
@@ -577,7 +582,8 @@ private:
 	void AddPostFence(TileIndex tile, std::pair<float, float> from, std::pair<float, float> to, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour);
 	void AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we);
 	bool AddRailFence(TileIndex tile, const BoxSpriteToDraw &box, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
-	void AddVehicles();
+	void AddVehicles(VehicleID own);
+	void AddAircraft(const Aircraft *v);
 	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
 	void AddTexturedFace(const GroundTexture &tex, float sx, float sy, std::span<const Vec3> world, std::span<const Vec3> shown, const Vec3 &normal, bool cutout);
 	void AddSpriteWalls(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, const std::array<float, 4> &tops, float band, bool cutout);
@@ -972,7 +978,7 @@ const GroundTexture &Renderer::GetCompositeTexture(std::span<const BoxSpriteToDr
  */
 RGB Renderer::Fog(const RGB &colour, float dist) const
 {
-	float f = std::clamp((dist - FOG_START) / (FOG_END - FOG_START), 0.0f, 1.0f);
+	float f = std::clamp((dist - this->fog_start) / (this->fog_end - this->fog_start), 0.0f, 1.0f);
 	return colour * (1 - f) + HAZE * f;
 }
 
@@ -1354,6 +1360,19 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					break;
 
 				case MP_STATION:
+					if (IsAirport(tile)) {
+						/* The lights along the runways are drawn in empty boxes; standing up, they looked like heaps. */
+						if (box.child || box.zmax < box.zmin) break;
+						/* Hangars are drawn as a front and a rear wall in thin boxes; give each the whole tile to find its shape in. */
+						if (box.zmax - box.zmin >= 10 && box.zmin <= z + 1) {
+							BoxSpriteToDraw building = box;
+							int x0 = TileX(tile) * TILE_SIZE, y0 = TileY(tile) * TILE_SIZE;
+							if (building.xmax - building.xmin < 2) std::tie(building.xmin, building.xmax) = std::pair(x0, x0 + static_cast<int>(TILE_SIZE) - 1);
+							if (building.ymax - building.ymin < 2) std::tie(building.ymin, building.ymax) = std::pair(y0, y0 + static_cast<int>(TILE_SIZE) - 1);
+							this->AddBuilding(building, BUILDING_HEIGHT, true);
+							break;
+						}
+					}
 					/* Station buildings, standing on the ground, get their real shape; platforms and roofs stay boxes. */
 					if (!box.child && box.zmax - box.zmin >= 10 && box.zmin <= z + 1) {
 						this->AddBuilding(box, BUILDING_HEIGHT, true);
@@ -3060,7 +3079,7 @@ void Renderer::AddTunnelInside(TileIndex tile, int z)
 	const Vec3 rel = this->cam.pos - face;
 	const float camera = rel.x * in.x + rel.y * in.y;
 	const float from = std::max(0.0f, std::floor((camera - 2 * TILE) / TUNNEL_STEP) * TUNNEL_STEP);
-	const float to = std::min(length, camera + FOG_END);
+	const float to = std::min(length, camera + this->fog_end);
 
 	/* The cross section: the walls up to the arch, the arch, and down the other wall. */
 	std::array<std::pair<float, float>, PORTAL_SEGMENTS + 3> profile;
@@ -3099,16 +3118,25 @@ void Renderer::AddTunnelInside(TileIndex tile, int z)
 	}
 }
 
-/** Add the trains and road vehicles around the camera, as boxes dressed in their sprites. */
-void Renderer::AddVehicles()
+/**
+ * Add the vehicles around the camera: trains and road vehicles as boxes dressed in their sprites, aircraft as cut-outs.
+ * @param own The vehicle the camera rides on, which is left out.
+ */
+void Renderer::AddVehicles(VehicleID own)
 {
 	for (const Vehicle *v : Vehicle::Iterate()) {
-		if (v->type != VEH_TRAIN && v->type != VEH_ROAD) continue;
-		if (v->vehstatus.Test(VehState::Hidden)) continue;
+		if (v->type != VEH_TRAIN && v->type != VEH_ROAD && v->type != VEH_AIRCRAFT) continue;
+		if (v->vehstatus.Test(VehState::Hidden) || v->index == own) continue;
 		float dx = v->x_pos - this->cam.pos.x;
 		float dy = v->y_pos - this->cam.pos.y;
 		if (std::hypot(dx, dy) > BOX_DIST) continue;
 		if (dx * this->cam.fwd.x + dy * this->cam.fwd.y < -2 * TILE) continue;
+
+		if (v->type == VEH_AIRCRAFT) {
+			/* Shadows and rotors are vehicles of their own. */
+			if (Aircraft::From(v)->IsNormalAircraft()) this->AddAircraft(Aircraft::From(v));
+			continue;
+		}
 
 		/* The sprite of the vehicle going to the south west, along the x axis. */
 		VehicleSpriteSeq seq;
@@ -3143,6 +3171,41 @@ void Renderer::AddVehicles()
 
 		this->AddSpriteBox(tex, pl, {-length / 2, -width / 2, 0}, {length / 2, width / 2, height}, false, true);
 	}
+}
+
+/**
+ * Add an aircraft as a cut-out facing the camera, at the height it flies in the game.
+ * It shows the sprite of the aircraft seen from the side the camera sees it from.
+ * @param v The aircraft.
+ */
+void Renderer::AddAircraft(const Aircraft *v)
+{
+	/* The map shows a vehicle going in a direction as seen from the south, looking north. Turn that view to the camera. */
+	auto heading = [](Direction dir) { return std::atan2(HEADINGS[dir].second, HEADINGS[dir].first); };
+	float camera_yaw = std::atan2(this->cam.fwd.y, this->cam.fwd.x);
+	float wanted = heading(v->direction) - camera_yaw + heading(DIR_N);
+	Direction shown = DIR_N;
+	float best = 4.0f;
+	for (Direction dir = DIR_BEGIN; dir < DIR_END; dir++) {
+		float off = std::abs(std::remainder(heading(dir) - wanted, 2.0f * static_cast<float>(M_PI)));
+		if (off < best) {
+			best = off;
+			shown = dir;
+		}
+	}
+
+	VehicleSpriteSeq seq;
+	v->GetImage(shown, EIT_ON_MAP, &seq);
+	if (!seq.IsValid()) return;
+	PaletteID pal = seq.seq[0].pal != 0 ? seq.seq[0].pal : GetVehiclePalette(v);
+	/* The map draws the sprite with its origin at the position of the aircraft. */
+	Vec3 at = {static_cast<float>(v->x_pos), static_cast<float>(v->y_pos), static_cast<float>(v->z_pos)};
+	/* The map looks down at 30 degrees, so the length of an aircraft going away from it shows upwards in the sprite.
+	 * Seen from lower down, that has to shrink, or an aircraft going away stands up like a pole. */
+	Vec3 d = this->cam.pos - at;
+	float seen = std::abs(d.z) / std::max(std::hypot(d.x, d.y, d.z), 1.0f);
+	float vertical = AIRCRAFT_UNITS * std::clamp(seen / 0.5f, 0.35f, 1.0f);
+	this->AddCutout(this->GetBoxTexture(seq.seq[0].sprite, pal, false), at, 0, 0, AIRCRAFT_UNITS, vertical);
 }
 
 /**
@@ -3368,6 +3431,11 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	this->cam.cx = this->width / 2.0f;
 	this->cam.cy = this->height / 2.0f;
 
+	/* From an aircraft the ground is seen from above, so even what is right below is far from the eye. */
+	float lift = std::clamp(camera.altitude, 0.0f, MAX_FOG_LIFT);
+	this->fog_start = FOG_START + lift;
+	this->fog_end = FOG_END + lift;
+
 	this->DrawSky();
 
 	/* Tiles in the field of view, nearest first, so hidden pixels are not textured. */
@@ -3377,7 +3445,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	int cx = static_cast<int>(camera.x / TILE);
 	int cy = static_cast<int>(camera.y / TILE);
 	/* The haze depends on the distance straight ahead, so at the sides the view reaches further. */
-	int reach = static_cast<int>(VIEW_TILES * std::hypot(1.0f, spread)) + 2;
+	int reach = static_cast<int>(this->fog_end / TILE * std::hypot(1.0f, spread)) + 2;
 	for (int ty = std::max(0, cy - reach); ty <= std::min<int>(Map::MaxY(), cy + reach); ty++) {
 		for (int tx = std::max(0, cx - reach); tx <= std::min<int>(Map::MaxX(), cx + reach); tx++) {
 			TileIndex tile = TileXY(tx, ty);
@@ -3387,8 +3455,9 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 			float ahead = dx * flat_fwd.x + dy * flat_fwd.y;
 			float side = dx * this->cam.right.x + dy * this->cam.right.y;
 			if (ahead < -TILE * 1.5f) continue;
-			if (std::abs(side) > std::max(ahead, 0.0f) * spread + TILE * 1.5f) continue;
-			if (ahead > FOG_END + TILE) continue;
+			/* Looking down from an aircraft, the view is wider at the ground than the distance ahead tells. */
+			if (std::abs(side) > (std::max(ahead, 0.0f) + camera.altitude) * spread + TILE * 1.5f) continue;
+			if (ahead > this->fog_end + TILE) continue;
 			visible.emplace_back(std::hypot(dx, dy), tile);
 		}
 	}
@@ -3398,7 +3467,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	/* Inside a tunnel its vault is nearest, and hides the hill around it. */
 	if (IsValidTile(camera.tunnel) && IsTunnelTile(camera.tunnel)) this->AddTunnelInside(camera.tunnel, std::get<int>(GetTilePixelSlope(camera.tunnel)));
 	for (const auto &[dist, tile] : visible) this->AddTile(tile, dist);
-	this->AddVehicles();
+	this->AddVehicles(camera.vehicle);
 
 	/* Fill the triangles in stripes of rows, on several threads. */
 	auto prepared = std::chrono::steady_clock::now();

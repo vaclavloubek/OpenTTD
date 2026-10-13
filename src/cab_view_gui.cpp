@@ -43,7 +43,7 @@
 
 /** Whether cab views look ahead in the direction of travel. Shared by all cab views. */
 static bool _cab_view_look_ahead = true;
-/** Whether cab views of trains show the 3D view instead of the map. Shared by all cab views. */
+/** Whether cab views of trains and aircraft show the 3D view instead of the map. Shared by all cab views. */
 static bool _cab_view_3d = false;
 
 /** Time constant (in milliseconds) of the camera easing towards its look-ahead position. */
@@ -74,6 +74,16 @@ static constexpr float CAB_VIEW_3D_TILT = 0.5f;
 static constexpr float CAB_VIEW_3D_TURN_DIST = 6.0f;
 /** Distance (in world coordinates) over which the 3D view follows most of a change in height, which on slopes comes in steps. */
 static constexpr float CAB_VIEW_3D_CLIMB_DIST = 1.5f;
+/** Height of the eye of the 3D view above the position of an aircraft; on the runway, about that of the windows of a train cab. */
+static constexpr float CAB_VIEW_3D_AIRCRAFT_EYE = 3.0f;
+/** How far ahead (in world coordinates) the 3D view from a flying aircraft looks at the ground: the higher it flies, the more it looks down. */
+static constexpr float CAB_VIEW_3D_AIRCRAFT_LOOK_DIST = 20.0f * TILE_SIZE;
+/** How much (in radians) the 3D view from a flying aircraft looks down at most, on top of the slight look down of the 3D view. */
+static constexpr float CAB_VIEW_3D_AIRCRAFT_MAX_LOOK_DOWN = 0.5f;
+/** How much (in radians) climbing and descending tilt the 3D view from an aircraft at most; aircraft climb and descend steeply in the game. */
+static constexpr float CAB_VIEW_3D_AIRCRAFT_MAX_TILT = 0.2f;
+/** Distance (in world coordinates) over which the height of the ground below an aircraft is followed, so hills below don't make the view nod. */
+static constexpr float CAB_VIEW_3D_AIRCRAFT_GROUND_DIST = 2.0f * TILE_SIZE;
 /**
  * Part of the time between two redraws of the screen that making a picture of the 3D view may take.
  * When it takes longer, the picture is made smaller, and when even that is not enough, the view is drawn
@@ -134,7 +144,9 @@ private:
 	int speed_width = 0; ///< Width of the speed part of the dashboard, dial included.
 	int load_width = 0; ///< Width of the load part of the dashboard.
 	float yaw = 0; ///< Direction of view of the 3D view, eased towards the direction of travel.
-	float height = 0; ///< Height of the train for the 3D view, eased so steps on slopes don't make it jump.
+	float height = 0; ///< Height of the train for the 3D view, eased so steps on slopes don't make it jump; for an aircraft, of the ground below it.
+	float climb = 0; ///< Angle at which an aircraft climbs or descends, eased.
+	float aircraft_z = 0; ///< Height of an aircraft at the last game tick.
 	float train_x = 0; ///< X position of the front of the train at the last game tick, see #GetExactPosition.
 	float train_y = 0; ///< Y position of the front of the train at the last game tick, see #GetExactPosition.
 	/** Camera of the 3D view at a game tick. */
@@ -159,10 +171,20 @@ private:
 	CabViewCamera drawn_camera; ///< Camera of the last picture of the 3D view.
 	uint32_t frame_id = 0; ///< Number of the last picture of the 3D view.
 
+	/**
+	 * Whether there is a 3D view from a vehicle.
+	 * @param v The vehicle.
+	 * @return True for trains and aircraft.
+	 */
+	static bool Has3DView(const Vehicle *v)
+	{
+		return v->type == VEH_TRAIN || v->type == VEH_AIRCRAFT;
+	}
+
 	/** Whether this window shows the 3D view. */
 	bool Is3D() const
 	{
-		return _cab_view_3d && Vehicle::Get(this->window_number)->type == VEH_TRAIN;
+		return _cab_view_3d && Has3DView(Vehicle::Get(this->window_number));
 	}
 
 	/**
@@ -174,8 +196,9 @@ private:
 	 */
 	static std::pair<float, float> GetExactPosition(const Vehicle *v)
 	{
-		/* The progress collects the speed until there is enough for a step, see GroundVehicle::DoUpdateSpeed(). */
-		uint step = (v->direction & 1) ? TILE_AXIAL_DISTANCE : TILE_CORNER_DISTANCE * 2; // As Vehicle::GetAdvanceDistance().
+		/* The progress collects the speed until there is enough for a step, see GroundVehicle::DoUpdateSpeed(),
+		 * and for aircraft 256 make a step, see UpdateAircraftSpeed(). */
+		uint step = (v->type == VEH_AIRCRAFT) ? 256 : (v->direction & 1) ? TILE_AXIAL_DISTANCE : TILE_CORNER_DISTANCE * 2; // As Vehicle::GetAdvanceDistance().
 		float part = std::min<float>(v->progress, step) / step;
 		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
 		return {v->x_pos + diff.x * part, v->y_pos + diff.y * part};
@@ -212,37 +235,17 @@ private:
 	}
 
 	/**
-	 * Place the camera of the 3D view for the current game tick: at the windows of the front of the train.
-	 * The direction and height ease with the distance travelled instead of with time, so
-	 * the view follows the track through curves and over slopes at any speed.
-	 * @param jump Place the camera at once, without easing or moving smoothly from where it was.
+	 * Place the camera of the 3D view of a train at the windows of its front.
+	 * The height eases with the distance travelled, so the view follows the track over slopes at any speed.
+	 * @param v The train.
+	 * @param camera The camera, with its direction already set.
+	 * @param x X position of the middle of the train.
+	 * @param y Y position of the middle of the train.
+	 * @param moved Distance the train moved since the last game tick.
+	 * @param jump Place the camera at once, without easing.
 	 */
-	void Update3DTick(bool jump)
+	void PlaceTrainCamera(const Vehicle *v, CabViewCamera &camera, float x, float y, float moved, bool jump)
 	{
-		const Vehicle *v = Vehicle::Get(this->window_number);
-		auto [x, y] = GetExactPosition(v);
-		float moved = std::hypot(x - this->train_x, y - this->train_y);
-		this->train_x = x;
-		this->train_y = y;
-
-		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
-		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
-		float turn = std::remainder(target - this->yaw, 2.0f * static_cast<float>(M_PI));
-		/* In a tunnel the view goes on along it; there is nothing to see from a depot. */
-		const bool tunnel = IsTileType(v->tile, MP_TUNNELBRIDGE) && IsTunnel(v->tile);
-		const bool dark = v->vehstatus.Test(VehState::Hidden) && !tunnel;
-		/* Jump when starting, when the train reverses, or when it moved too far to follow. */
-		jump |= this->tick_cameras.empty() || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE || dark != this->tick_cameras.back().camera.dark;
-		if (jump) {
-			this->yaw = target;
-		} else {
-			this->yaw += turn * (1.0f - std::exp(-moved / CAB_VIEW_3D_TURN_DIST));
-		}
-
-		CabViewCamera camera;
-		camera.dark = dark;
-		camera.tunnel = tunnel ? v->tile : INVALID_TILE;
-		camera.yaw = this->yaw;
 		/* The position of a vehicle is its middle; move the camera to the front. */
 		float half_length = Train::From(v)->gcache.cached_veh_length / 2.0f;
 		camera.x = x + std::cos(this->yaw) * half_length;
@@ -258,6 +261,79 @@ private:
 		float ahead = GetTrackHeight(v, camera.x + std::cos(this->yaw) * half_length, camera.y + std::sin(this->yaw) * half_length);
 		float behind = GetTrackHeight(v, x, y);
 		camera.pitch = CAB_VIEW_3D_TILT * std::atan2(ahead - behind, 2 * half_length);
+	}
+
+	/**
+	 * Place the camera of the 3D view of an aircraft at its windows, at the height it flies in the game.
+	 * The higher it flies, the more the view looks down at the ground; climbing and descending tilt it a bit.
+	 * @param v The aircraft.
+	 * @param camera The camera, with its position across the ground and direction already set.
+	 * @param moved Distance the aircraft moved across the ground since the last game tick.
+	 * @param jump Place the camera at once, without easing.
+	 */
+	void PlaceAircraftCamera(const Vehicle *v, CabViewCamera &camera, float moved, bool jump)
+	{
+		float z = static_cast<float>(v->z_pos);
+		float ground = static_cast<float>(GetSlopePixelZOutsideMap(static_cast<int>(camera.x), static_cast<int>(camera.y)));
+		/* Helicopters rise and land straight up and down, without moving across the ground. */
+		float climb = moved > 0.5f ? std::atan2(z - this->aircraft_z, moved) : 0.0f;
+		this->aircraft_z = z;
+		if (jump) {
+			this->height = ground;
+			this->climb = 0;
+		} else {
+			this->height += (ground - this->height) * (1.0f - std::exp(-moved / CAB_VIEW_3D_AIRCRAFT_GROUND_DIST));
+			this->climb += (climb - this->climb) * (1.0f - std::exp(-std::max(moved, 0.5f) / CAB_VIEW_3D_TURN_DIST));
+		}
+
+		camera.z = z + CAB_VIEW_3D_AIRCRAFT_EYE;
+		/* On the runway the eye is as high as in a train, which does not count as flying. */
+		camera.altitude = std::max(camera.z - this->height - CAB_VIEW_3D_EYE, 0.0f);
+		float look_down = std::min(std::atan2(camera.altitude, CAB_VIEW_3D_AIRCRAFT_LOOK_DIST), CAB_VIEW_3D_AIRCRAFT_MAX_LOOK_DOWN);
+		camera.pitch = std::clamp(CAB_VIEW_3D_TILT * this->climb, -CAB_VIEW_3D_AIRCRAFT_MAX_TILT, CAB_VIEW_3D_AIRCRAFT_MAX_TILT) - look_down;
+	}
+
+	/**
+	 * Place the camera of the 3D view for the current game tick: at the windows of the front of the train or of the aircraft.
+	 * The direction and height ease with the distance travelled instead of with time, so
+	 * the view follows the track through curves and over slopes at any speed.
+	 * @param jump Place the camera at once, without easing or moving smoothly from where it was.
+	 */
+	void Update3DTick(bool jump)
+	{
+		const Vehicle *v = Vehicle::Get(this->window_number);
+		auto [x, y] = GetExactPosition(v);
+		float moved = std::hypot(x - this->train_x, y - this->train_y);
+		this->train_x = x;
+		this->train_y = y;
+
+		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
+		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
+		float turn = std::remainder(target - this->yaw, 2.0f * static_cast<float>(M_PI));
+		/* In a tunnel the view goes on along it; there is nothing to see from a depot or hangar. */
+		const bool aircraft = v->type == VEH_AIRCRAFT;
+		const bool tunnel = !aircraft && IsTileType(v->tile, MP_TUNNELBRIDGE) && IsTunnel(v->tile);
+		const bool dark = v->vehstatus.Test(VehState::Hidden) && !tunnel;
+		/* Jump when starting, when the train reverses, or when it moved too far to follow. */
+		jump |= this->tick_cameras.empty() || std::abs(turn) > 0.75f * static_cast<float>(M_PI) || moved > 2 * TILE_SIZE || dark != this->tick_cameras.back().camera.dark;
+		if (jump) {
+			this->yaw = target;
+		} else {
+			this->yaw += turn * (1.0f - std::exp(-moved / CAB_VIEW_3D_TURN_DIST));
+		}
+
+		CabViewCamera camera;
+		camera.dark = dark;
+		camera.tunnel = tunnel ? v->tile : INVALID_TILE;
+		camera.yaw = this->yaw;
+		camera.vehicle = v->index;
+		if (aircraft) {
+			camera.x = x;
+			camera.y = y;
+			this->PlaceAircraftCamera(v, camera, moved, jump);
+		} else {
+			this->PlaceTrainCamera(v, camera, x, y, moved, jump);
+		}
 
 		auto now = std::chrono::steady_clock::now();
 		if (jump) {
@@ -333,6 +409,7 @@ private:
 		camera.z = from.z + (to.z - from.z) * f;
 		camera.yaw = from.yaw + std::remainder(to.yaw - from.yaw, 2.0f * static_cast<float>(M_PI)) * f;
 		camera.pitch = from.pitch + (to.pitch - from.pitch) * f;
+		camera.altitude = from.altitude + (to.altitude - from.altitude) * f;
 		return camera;
 	}
 
@@ -609,7 +686,7 @@ public:
 		this->offset_y = target.y;
 		this->ApplyOffset();
 
-		if (v->type == VEH_TRAIN) this->Update3DTick(true);
+		if (Has3DView(v)) this->Update3DTick(true);
 		this->OnInvalidateData();
 	}
 
@@ -847,7 +924,7 @@ public:
 		bool is_3d = this->Is3D();
 		this->SetWidgetLoweredState(WID_CV_LOOK_AHEAD, _cab_view_look_ahead);
 		this->SetWidgetLoweredState(WID_CV_3D, is_3d);
-		this->SetWidgetDisabledState(WID_CV_3D, v->type != VEH_TRAIN);
+		this->SetWidgetDisabledState(WID_CV_3D, !Has3DView(v));
 
 		NWidgetStacked *selection = this->GetWidget<NWidgetStacked>(WID_CV_VIEW_SELECT);
 		if (selection->shown_plane != (is_3d ? 1 : 0)) {
