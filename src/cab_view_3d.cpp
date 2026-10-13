@@ -99,6 +99,8 @@ constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles i
 constexpr float ROAD_VEHICLE_HEIGHT = 1.6f; ///< Heights and widths of road vehicles in the 3D view, compared to those in their sprites; seen from the cab of a bus, the roof of another bus is above the eye.
 constexpr float ROAD_VEHICLE_MAX_WIDTH = 4.0f; ///< Widest a road vehicle is drawn in the 3D view, so it stays in its lane.
 constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
+constexpr SpriteID ROADSIDE_TREE_SPRITE = 0x1212; ///< Sprite of the trees along town roads, see table/road_land.h.
+constexpr float ROADSIDE_TREE_SCALE = 0.65f; ///< Size of the trees along town roads compared to other cut-outs.
 constexpr float ISO_UNITS = 0.3536f; ///< Width of a sprite pixel across the view, in world units; the isometric view draws a unit as 2 * sqrt(2) pixels.
 constexpr float MIN_ROOF_HEIGHT = 3.0f; ///< A building is given a roof when its sprite reaches at least this much above its walls.
 constexpr float SIGNAL_HEIGHT = 6.0f; ///< Height of the top of a signal above the track.
@@ -623,7 +625,7 @@ private:
 	const BuildingShape &GetBuildingShape(const BoxSpriteToDraw &box, bool station);
 	void AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station);
 	void AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_col, float foot_row, float scale_h, float scale_v);
-	void AddBillboard(const BoxSpriteToDraw &box);
+	void AddBillboard(const BoxSpriteToDraw &box, float scale = 1.0f);
 	bool AddSignal(TileIndex tile, const BoxSpriteToDraw &box);
 	void AddCrossing(TileIndex tile, int z);
 	const std::optional<FenceFit> &GetFenceFit(SpriteID image, PaletteID pal, Axis axis, float climb);
@@ -1648,7 +1650,9 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					if (std::min(box.xmax - box.xmin, box.ymax - box.ymin) == 0 && std::max(box.xmax - box.xmin, box.ymax - box.ymin) >= 8) break;
 					/* Thin things like lamps and catenary pylons stand as cut-outs. */
 					if (box.xmax - box.xmin < 2 && box.ymax - box.ymin < 2) {
-						this->AddBillboard(box);
+						/* Trees along town roads stand right by the road; at the size of other trees they filled the view. */
+						const bool roadside_tree = IsNormalRoadTile(tile) && (box.image & SPRITE_MASK) == ROADSIDE_TREE_SPRITE;
+						this->AddBillboard(box, roadside_tree ? ROADSIDE_TREE_SCALE : 1.0f);
 					} else {
 						/* Platforms, the low boxes of stations standing on the ground. */
 						const bool platform = IsTileType(tile, MP_STATION) && box.zmin <= z + 1 && box.zmax - box.zmin <= 2;
@@ -2580,14 +2584,15 @@ void Renderer::AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_
  * Add a thing standing on a tile as a cut-out facing the camera, like trees and signals.
  * The viewport draws the sprite where the thing stands.
  * @param box The sprite and its box.
+ * @param scale How much smaller or larger than other cut-outs it is, see #CUTOUT_UNITS.
  */
-void Renderer::AddBillboard(const BoxSpriteToDraw &box)
+void Renderer::AddBillboard(const BoxSpriteToDraw &box, float scale)
 {
 	float sx = static_cast<float>(box.x) / ZOOM_BASE;
 	float sy = static_cast<float>(box.y) / ZOOM_BASE;
 	float z = static_cast<float>(box.zmin);
 	Vec3 foot = {(sy + z - sx / 2) / 2, (sy + z + sx / 2) / 2, z};
-	this->AddCutout(this->GetBoxTexture(box.image, box.pal, false), foot, 0, 0, CUTOUT_UNITS, CUTOUT_UNITS);
+	this->AddCutout(this->GetBoxTexture(box.image, box.pal, false), foot, 0, 0, CUTOUT_UNITS * scale, CUTOUT_UNITS * scale);
 }
 
 /**

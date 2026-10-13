@@ -246,6 +246,9 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   Textura je široká jako dlaždice a řady začínají ve výškách po 16 jednotkách, takže kameny sousedních dlaždic
   navazují. Dřív byly boky jednolitě hnědé a z ulice vypadaly jako hliněné stěny.
 
+- **Stromy podél městských silnic** (sprite 0x1212 v kraji silnice) jsou výřezy 0,65× menší než ostatní stromy
+  (`ROADSIDE_TREE_SCALE`). Stojí hned u vozovky, a ve velikosti lesních stromů zakrývaly z autobusu půl obrazu.
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
