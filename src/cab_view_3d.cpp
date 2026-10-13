@@ -131,7 +131,14 @@ constexpr float BRIDGE_DECK_EDGE = 2.0f; ///< How far the edges of the deck of a
 constexpr float RAMP_EDGE = 2.5f; ///< How far the edges of the deck of a bridge ramp are from the sides of its tile.
 constexpr float BRIDGE_SIDE_PLANE = 13.5f; ///< Where the near side of a bridge stands across its tiles when its sprite does not tell.
 constexpr float BRIDGE_SIDE_BOOST = 1.25f; ///< How much more opaque the sides of bridges and fences are made, see #Renderer::GetSideTexture.
-constexpr float FENCE_INSET = 0.6f; ///< How far fences stand inside the sides of their tiles, so those of two tiles on the same side don't overlap.
+constexpr float FENCE_INSET = 0.6f; ///< How far fences along railways stand inside the sides of their tiles, so those of two tiles on the same side don't overlap.
+constexpr float FIELD_FENCE_INSET = 1.0f; ///< How far the middle of hedges and walls around fields stands inside the sides of their tiles.
+constexpr float HEDGE_HEIGHT = 3.2f; ///< Height of hedges around fields, a little below the eye in the cab.
+constexpr float HEDGE_HALF_WIDTH = 0.8f; ///< Half the width of hedges around fields.
+constexpr int HEDGE_SEGMENTS = 8; ///< Into how many parts a hedge along a tile is split close by, for its height and width to go up and down.
+constexpr float FIELD_GATE_WIDTH = 4.0f; ///< Width of the gates in hedges around fields.
+constexpr float FIELD_WALL_HEIGHT = 1.8f; ///< Height of the stone walls around fields.
+constexpr float FIELD_WALL_HALF_WIDTH = 0.5f; ///< Half the width of the stone walls around fields.
 constexpr float FENCE_DIST = 12.0f * TILE; ///< Fences along railways are drawn up to this distance; further away, their posts get thinner than a pixel.
 constexpr float FENCE_HEIGHT = 2.0f; ///< Height of the fences along railways, half that of the eye in the cab.
 constexpr float FENCE_POST_SPACING = 4.0f; ///< Distance between the posts of fences along railways.
@@ -224,6 +231,11 @@ constexpr RGB LOCK_COLOUR = {150, 146, 138}; ///< Colour of the stone walls of l
 constexpr RGB LOCK_GATE_COLOUR = {70, 52, 36}; ///< Colour of the wooden gates of locks.
 constexpr RGB CASCADE_FOAM_COLOUR = {222, 232, 238}; ///< Colour of the white water falling over the steps of a river going down a slope.
 constexpr RGB CASCADE_WATER_COLOUR = {70, 104, 150}; ///< Colour of the clear water falling over the steps of a river going down a slope.
+constexpr RGB HEDGE_LEAF_COLOUR = {82, 124, 50}; ///< Colour of the leaves of hedges around fields, in the light.
+constexpr RGB HEDGE_SHADOW_COLOUR = {24, 42, 18}; ///< Colour deep inside hedges around fields, between the leaves.
+constexpr RGB HEDGE_YELLOW_COLOUR = {236, 206, 72}; ///< Colour of the yellow flowers of flowering hedges.
+constexpr RGB HEDGE_RED_COLOUR = {206, 64, 60}; ///< Colour of the red flowers of flowering hedges.
+constexpr RGB FIELD_FENCE_COLOUR = {150, 116, 76}; ///< Colour of the wooden fences and gates around fields.
 constexpr RGB LOCK_GATE_GAP_COLOUR = {28, 22, 16}; ///< Colour of the seam between the leaves of a gate of a lock.
 
 /** A vector in world coordinates. */
@@ -505,14 +517,6 @@ struct BuildingShape {
 	float foot_row = 0; ///< Row of the sprite at the foot of the cut-out, relative to where the sprite is drawn.
 };
 
-/** Where a fence stands in its sprite, see #FitFence. */
-struct FenceFit {
-	float line; ///< Where the bottom of the fence is, relative to where the sprite is drawn, see #FitFence.
-	float height; ///< Height of the fence, in rows of the sprite.
-	float left; ///< Column of the left side of the fence, relative to where the sprite is drawn.
-	float right; ///< Column of the right side of the fence, relative to where the sprite is drawn.
-};
-
 /**
  * Whether a sprite is the building of the default rail stations.
  * @param image The sprite.
@@ -575,6 +579,7 @@ struct ScreenTriangle {
 struct RoadLook;
 static GroundTexture MakeMasonryTexture();
 static GroundTexture MakeCascadeTexture();
+static GroundTexture MakeHedgeTexture(std::optional<RGB> flowers);
 
 /** The renderer, with its buffers and caches. */
 class Renderer {
@@ -594,7 +599,6 @@ public:
 		this->textures.clear();
 		this->box_textures.clear();
 		this->building_shapes.clear();
-		this->fence_fits.clear();
 		this->frame = {};
 		this->depth = {};
 		this->frame_valid = false;
@@ -623,18 +627,18 @@ private:
 	std::unordered_map<std::vector<int32_t>, GroundTexture, TextureKeyHash> textures; ///< Ground textures put together so far.
 	std::unordered_map<uint64_t, GroundTexture> box_textures; ///< Textures of sprites standing in boxes, by sprite and palette.
 	std::map<std::tuple<SpriteID, PaletteID, int, int, int, int, int, bool>, BuildingShape> building_shapes; ///< Shapes of buildings worked out so far, see #GetBuildingShape.
-	std::map<std::tuple<SpriteID, PaletteID, int, int>, std::optional<FenceFit>> fence_fits; ///< Where fences stand in their sprites, see #GetFenceFit.
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
 	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
 	const GroundTexture masonry = MakeMasonryTexture(); ///< Texture of the walls around foundations.
 	const GroundTexture cascade = MakeCascadeTexture(); ///< Texture of the water falling over the steps of a river going down a slope.
+	const std::array<GroundTexture, 3> hedges = {MakeHedgeTexture(std::nullopt), MakeHedgeTexture(HEDGE_YELLOW_COLOUR), MakeHedgeTexture(HEDGE_RED_COLOUR)}; ///< Textures of hedges around fields: plain, with yellow flowers and with red flowers.
 
 	const RawSprite &GetRawSprite(SpriteID sprite);
 	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
 	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal, bool widen = true);
 	const GroundTexture &GetCompositeTexture(std::span<const BoxSpriteToDraw *const> boxes, Point origin);
-	const GroundTexture &GetSideTexture(SpriteID image, PaletteID pal, Axis axis, float climb = 0, bool detail = false);
+	const GroundTexture &GetSideTexture(SpriteID image, PaletteID pal, Axis axis, float climb = 0);
 	RGB Fog(const RGB &colour, float dist) const;
 
 	std::vector<ScreenTriangle> triangles; ///< Triangles of the current picture, nearest first.
@@ -672,10 +676,10 @@ private:
 	void AddBillboard(const BoxSpriteToDraw &box, float scale = 1.0f);
 	bool AddSignal(TileIndex tile, const BoxSpriteToDraw &box);
 	void AddCrossing(TileIndex tile, int z);
-	const std::optional<FenceFit> &GetFenceFit(SpriteID image, PaletteID pal, Axis axis, float climb);
-	void AddFence(const BoxSpriteToDraw &box, TileIndex tile, Axis axis, float edge, const std::array<float, CORNER_END> &corner_z, bool split_we);
 	void AddPostFence(TileIndex tile, std::pair<float, float> from, std::pair<float, float> to, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour);
-	void AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we);
+	void AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddHedge(TileIndex tile, Axis axis, float line, const GroundTexture &tex, std::pair<float, float> gap, const std::array<float, CORNER_END> &corner_z, bool split_we, int segments);
+	void AddFieldWall(TileIndex tile, Axis axis, float line, const std::array<float, CORNER_END> &corner_z, bool split_we);
 	bool AddRailFence(TileIndex tile, const BoxSpriteToDraw &box, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddVehicles(VehicleID own);
 	Direction GetShownDirection(Direction dir) const;
@@ -1273,6 +1277,61 @@ static GroundTexture MakeCascadeTexture()
 			if (f > 0.65f) white += (f - 0.65f) * 2.4f;
 			white = std::clamp(white, 0.0f, 1.0f);
 			pic.pixels[static_cast<size_t>(y) * pic.width + x] = CASCADE_WATER_COLOUR * (1 - white) + CASCADE_FOAM_COLOUR * white;
+		}
+	}
+	FinishTexture(tex, std::vector<float>(pic.pixels.size(), 1.0f), 0, false);
+	return tex;
+}
+
+/** Pixels of the texture of hedges per world unit. */
+constexpr int HEDGE_PIXELS = 8;
+/** Rows of the texture of hedges: from the middle of the top, over the side, down to the ground. */
+constexpr int HEDGE_ROWS = 6 * HEDGE_PIXELS;
+
+/**
+ * Make the texture of the hedges around fields: clumps of leaves, lit from above, over the shadow deep inside the
+ * hedge, darker towards the ground. It is a tile wide, so the leaves of the hedges of neighbouring tiles meet.
+ * @param flowers Colour of the flowers among the leaves, if any.
+ * @return The texture; column 0 is at the north or the east end of the hedge, row 0 at the middle of its top.
+ */
+static GroundTexture MakeHedgeTexture(std::optional<RGB> flowers)
+{
+	GroundTexture tex;
+	Picture &pic = tex.levels[0];
+	pic.width = TILE_SIZE * HEDGE_PIXELS;
+	pic.height = HEDGE_ROWS;
+	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, HEDGE_SHADOW_COLOUR);
+	uint32_t state = flowers.has_value() ? static_cast<uint32_t>(flowers->r * 7 + flowers->g) : 12345U;
+	auto random = [&state]() {
+		state = state * 1664525U + 1013904223U;
+		return (state >> 8) / 16777216.0f;
+	};
+	/* Clumps of leaves, each lighter at its top, later ones over earlier ones. */
+	const int clumps = pic.width * pic.height / 3;
+	for (int i = 0; i < clumps; i++) {
+		const float cx = random() * pic.width;
+		const float cy = random() * pic.height;
+		const bool flower = flowers.has_value() && random() < 0.07f;
+		const float radius = flower ? 0.9f : 1.2f + random() * 1.8f;
+		const float tone = 0.65f + random() * 0.6f;
+		const RGB colour = flower ? *flowers : HEDGE_LEAF_COLOUR * tone;
+		for (int y = static_cast<int>(cy - radius); y <= static_cast<int>(cy + radius); y++) {
+			if (y < 0 || y >= pic.height) continue;
+			for (int x = static_cast<int>(cx - radius) - 1; x <= static_cast<int>(cx + radius) + 1; x++) {
+				const float dx = x + 0.5f - cx;
+				const float dy = y + 0.5f - cy;
+				if (dx * dx + dy * dy > radius * radius) continue;
+				const float light = 1.0f - 0.25f * dy / radius;
+				pic.pixels[static_cast<size_t>(y) * pic.width + (x + pic.width) % pic.width] = colour * light;
+			}
+		}
+	}
+	/* Less light reaches the leaves low down the sides. */
+	for (int y = 0; y < pic.height; y++) {
+		const float f = std::clamp((y + 0.5f) / pic.height - 0.5f, 0.0f, 0.5f) * 2;
+		for (int x = 0; x < pic.width; x++) {
+			RGB &p = pic.pixels[static_cast<size_t>(y) * pic.width + x];
+			p = p * (1 - 0.45f * f);
 		}
 	}
 	FinishTexture(tex, std::vector<float>(pic.pixels.size(), 1.0f), 0, false);
@@ -2002,7 +2061,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	if (IsBridgeTile(tile)) this->AddBridgeRamp(tile, raw_z, corner_z, split_we, dist);
 	if (IsBridgeAbove(tile)) this->AddBridgeMiddle(tile, corner_z, split_we, dist);
 	if (boxes && IsLevelCrossingTile(tile)) this->AddCrossing(tile, z);
-	if (boxes && IsTileType(tile, MP_CLEAR)) this->AddFieldFences(tile, corner_z, split_we);
+	if (boxes && IsTileType(tile, MP_CLEAR)) this->AddFieldFences(tile, corner_z, split_we, dist);
 	/* The walls and gates of locks are drawn whole, see AddLock. */
 	if (boxes && !lock) {
 		for (BoxSpriteToDraw &box : this->box_sprites) {
@@ -3271,127 +3330,6 @@ void Renderer::AddCrossing(TileIndex tile, int z)
 }
 
 /**
- * Work out where a fence along an axis stands in its sprite, from its bottom, which stands on the ground. The isometric
- * view draws a point of the fence at the row along + across - z, and at the column 2 * (across - along) for a fence
- * along the x axis, 2 * (along - across) for one along the y axis. With the ground climbing along the fence, the line
- * of the bottom of each column, its row plus or minus (1 - climb) times half its column, is then the same: it is
- * (2 - climb) times across, less how high the ground is where the fence starts along the axis.
- * @param tex The texture of the sprite, see #Renderer::GetBoxTexture.
- * @param axis The direction of the fence.
- * @param climb How much the ground rises per unit along the fence.
- * @return Where the fence stands; nothing when the sprite has no pixels.
- */
-static std::optional<FenceFit> FitFence(const GroundTexture &tex, Axis axis, float climb)
-{
-	const Picture &pic = tex.levels[0];
-	if (pic.alpha.empty()) return std::nullopt;
-	std::vector<float> lines;
-	float height = 0;
-	int left = pic.width;
-	int right = 0;
-	for (int x = 0; x < pic.width; x++) {
-		int top = -1;
-		int bottom = -1;
-		for (int y = 0; y < pic.height; y++) {
-			if (pic.alpha[static_cast<size_t>(y) * pic.width + x] < 0.5f) continue;
-			if (top < 0) top = y;
-			bottom = y;
-		}
-		if (top < 0) continue;
-		const float col = x + tex.left + 0.5f;
-		const float row = bottom + tex.top + 0.5f;
-		lines.push_back(row + (axis == AXIS_X ? 1.0f : -1.0f) * (1 - climb) * col / 2);
-		height = std::max(height, static_cast<float>(bottom - top + 1));
-		left = std::min(left, x);
-		right = std::max(right, x + 1);
-	}
-	if (lines.empty()) return std::nullopt;
-	/* Between its posts, the bottom of a fence may be a rail above the ground; its lowest parts stand on it. */
-	const size_t lowest = lines.size() * 9 / 10;
-	std::nth_element(lines.begin(), lines.begin() + lowest, lines.end());
-	return FenceFit{lines[lowest], height, static_cast<float>(left + tex.left), static_cast<float>(right + tex.left)};
-}
-
-/**
- * Get where a fence stands in its sprite, see #FitFence.
- * @param image The sprite of the fence.
- * @param pal Its palette.
- * @param axis The direction of the fence.
- * @param climb How much the ground rises per unit along the fence.
- * @return Where the fence stands; nothing when the sprite has no pixels.
- */
-const std::optional<FenceFit> &Renderer::GetFenceFit(SpriteID image, PaletteID pal, Axis axis, float climb)
-{
-	const auto key = std::make_tuple(image & SPRITE_MASK, pal, static_cast<int>(axis), static_cast<int>(std::lround(climb * 16)));
-	auto it = this->fence_fits.find(key);
-	if (it == this->fence_fits.end()) it = this->fence_fits.emplace(key, FitFence(this->GetBoxTexture(image, pal, false), axis, climb)).first;
-	return it->second;
-}
-
-/**
- * Add a fence along a side of a tile, like the hedges around fields and the fences along railways: an upright cut-out
- * following the ground, dressed in its sprite and seen from both sides, with its height scaled like those of buildings.
- * @param box The sprite of the fence.
- * @param tile The tile.
- * @param axis The direction of the fence.
- * @param edge The side of the tile whose ground the sprite stands on, across the fence: 0 or #TILE.
- * @param corner_z Height of the corners of the ground of the tile.
- * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
- */
-void Renderer::AddFence(const BoxSpriteToDraw &box, TileIndex tile, Axis axis, float edge, const std::array<float, CORNER_END> &corner_z, bool split_we)
-{
-	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
-	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
-	/* Coordinates along and across the fence. */
-	const float a0 = axis == AXIS_X ? x0 : y0;
-	const float c0 = axis == AXIS_X ? y0 : x0;
-	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
-	/* Height of the ground at a point of the tile, relative to its north corner. */
-	auto ground = [&](float a, float c) { return axis == AXIS_X ? SurfaceZ(corner_z, split_we, a, c) : SurfaceZ(corner_z, split_we, c, a); };
-
-	const std::array<float, 2> base = {ground(0, edge), ground(TILE, edge)};
-	const float climb = (base[1] - base[0]) / TILE;
-	const std::optional<FenceFit> &fit = this->GetFenceFit(box.image, box.pal, axis, climb);
-	if (!fit.has_value()) return;
-	const float sx = static_cast<float>(box.x) / ZOOM_BASE;
-	const float sy = static_cast<float>(box.y) / ZOOM_BASE;
-	const float line = fit->line + sy + (axis == AXIS_X ? 1.0f : -1.0f) * (1 - climb) * sx / 2;
-	/* Where the sprite shows the fence across the tile, and where it stands in the 3D view. */
-	const float shown = (line + base[0] - climb * a0) / (2 - climb);
-	const float plane = std::clamp(shown, c0 + FENCE_INSET, c0 + TILE - FENCE_INSET);
-
-	/* Where the sprite shows the ends of the fence along the tile; a fence that ends a little short of the sides of the
-	 * tile is stretched to them, so the fences of tiles next to each other join. */
-	std::array<float, 2> ends;
-	if (axis == AXIS_X) {
-		/* Along the x axis, the columns go the other way. */
-		ends = {shown - (fit->right + sx) / 2, shown - (fit->left + sx) / 2};
-	} else {
-		ends = {shown + (fit->left + sx) / 2, shown + (fit->right + sx) / 2};
-	}
-	ends[0] = std::clamp(ends[0], a0, a0 + 2);
-	ends[1] = std::clamp(ends[1], a0 + TILE - 2, a0 + TILE);
-
-	/* The pixels at the bottom reach half a row below the ground. */
-	const float low = -0.5f;
-	const float high = fit->height;
-	const std::array<float, 2> foot = {ground(0, plane - c0), ground(TILE, plane - c0)};
-	const std::array<float, 2> pictured_base = {base[0] + climb * (ends[0] - a0), base[0] + climb * (ends[1] - a0)};
-	const std::array<Vec3, 4> world = {
-		point(a0, plane, foot[0] + low * BUILDING_HEIGHT), point(a0 + TILE, plane, foot[1] + low * BUILDING_HEIGHT),
-		point(a0 + TILE, plane, foot[1] + high * BUILDING_HEIGHT), point(a0, plane, foot[0] + high * BUILDING_HEIGHT),
-	};
-	const std::array<Vec3, 4> pictured = {
-		point(ends[0], shown, pictured_base[0] + low), point(ends[1], shown, pictured_base[1] + low),
-		point(ends[1], shown, pictured_base[1] + high), point(ends[0], shown, pictured_base[0] + high),
-	};
-	const GroundTexture &tex = this->GetSideTexture(box.image, box.pal, axis, climb, true);
-	const Vec3 normal = point(0, 1, 0);
-	this->AddTexturedFace(tex, sx, sy, world, pictured, normal, true);
-	this->AddTexturedFace(tex, sx, sy, world, pictured, normal * -1, true);
-}
-
-/**
  * Add a fence of posts and rails, like those along railways, between two points of a tile, following its ground.
  * @param tile The tile.
  * @param from Where the fence starts, relative to the north corner of the tile.
@@ -3436,24 +3374,200 @@ void Renderer::AddPostFence(TileIndex tile, std::pair<float, float> from, std::p
 }
 
 /**
+ * Add a hedge along a side of a tile, following its ground: a long mound of leaves, rounded at the top, its height
+ * and width going up and down a little along it. Before, hedges were the sprites of the game standing upright, which
+ * from close by looked like flat walls.
+ * @param tile The tile.
+ * @param axis The direction of the hedge.
+ * @param line Where the middle of the hedge stands across the tile, relative to its north corner.
+ * @param tex The texture of the leaves, see #MakeHedgeTexture.
+ * @param gap The part along the tile without the hedge, for a gate; nothing when the two are equal.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ * @param segments Into how many parts along the hedge is split; fewer far away.
+ */
+void Renderer::AddHedge(TileIndex tile, Axis axis, float line, const GroundTexture &tex, std::pair<float, float> gap, const std::array<float, CORNER_END> &corner_z, bool split_we, int segments)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	const float a0 = axis == AXIS_X ? x0 : y0;
+	const float c0 = axis == AXIS_X ? y0 : x0;
+	auto point = [&](float a, float c, float z) { return axis == AXIS_X ? Vec3{x0 + a, y0 + c, z} : Vec3{x0 + c, y0 + a, z}; };
+	auto ground = [&](float a, float c) { return axis == AXIS_X ? SurfaceZ(corner_z, split_we, a, c) : SurfaceZ(corner_z, split_we, c, a); };
+	/* Noise fixed to the world, so the hedges of tiles next to each other meet. */
+	auto noise = [&](float a, uint32_t salt) {
+		const uint32_t h = ((static_cast<uint32_t>(std::lround(a0 + a)) * 73856093U) ^ (static_cast<uint32_t>(std::lround(2 * (c0 + line))) * 19349663U) ^ (salt * 83492791U)) * 2654435761U;
+		return (h >> 8) / 16777216.0f;
+	};
+	/* The shape of the hedge across it: across in half widths, up in heights. */
+	static constexpr std::array<std::pair<float, float>, 7> PROFILE = {{
+		{-1.0f, 0.0f}, {-1.08f, 0.55f}, {-0.78f, 0.9f}, {0.0f, 1.0f}, {0.78f, 0.9f}, {1.08f, 0.55f}, {1.0f, 0.0f},
+	}};
+	constexpr float SUNK = 0.4f; ///< How deep the hedge goes into the ground, so it stands on it on slopes too.
+
+	struct Ring {
+		std::array<Vec3, PROFILE.size()> pos; ///< The points of the shape across the hedge.
+		std::array<float, PROFILE.size()> row; ///< Their rows of the texture: how far they are from the middle of the top.
+		float a; ///< Where the ring is along the tile.
+	};
+	std::vector<Ring> rings(segments + 1);
+	for (int i = 0; i <= segments; i++) {
+		Ring &r = rings[i];
+		r.a = static_cast<float>(TILE) * i / segments;
+		const float g = ground(r.a, line);
+		const float h = HEDGE_HEIGHT * (0.85f + 0.3f * noise(r.a, 1));
+		const float w = HEDGE_HALF_WIDTH * (0.85f + 0.3f * noise(r.a, 2));
+		for (size_t k = 0; k < PROFILE.size(); k++) {
+			const float across = PROFILE[k].first * w;
+			const float up = PROFILE[k].second * (h + SUNK) - SUNK;
+			r.pos[k] = point(r.a, line + across, g + up);
+			r.row[k] = (std::abs(across) + h - up) * HEDGE_PIXELS;
+		}
+	}
+
+	auto vertex = [&](const Ring &r, size_t k, float col) {
+		ClipVertex v;
+		v.c = this->cam.ToCamera(r.pos[k]);
+		v.a = {col, r.row[k], a0 + r.a, r.row[k] / HEDGE_PIXELS};
+		return v;
+	};
+	/* A face of the hedge, lit by which way it faces, out of the middle of the hedge. */
+	auto face = [&](const std::array<ClipVertex, 4> &v, const std::array<Vec3, 4> &p, const Vec3 &middle) {
+		Vec3 n = (p[1] - p[0]).Cross(p[3] - p[0]);
+		if (n.Dot(n) == 0) n = (p[2] - p[1]).Cross(p[0] - p[1]);
+		if (n.Dot(n) == 0) return;
+		const Vec3 centre = (p[0] + p[1] + p[2] + p[3]) * 0.25f;
+		if (n.Dot(centre - middle) < 0) n = n * -1;
+		const Paint paint = {&tex, {}, Shade(n), 0, 1.0f};
+		this->AddTriangle({v[0], v[1], v[2]}, paint);
+		this->AddTriangle({v[0], v[2], v[3]}, paint);
+	};
+	/* The end of a part of the hedge, where a gate or nothing follows. */
+	auto end = [&](const Ring &r, bool first) {
+		const float g = ground(r.a, line);
+		const Vec3 middle = point(r.a + (first ? 1.0f : -1.0f), line, g + HEDGE_HEIGHT / 2);
+		for (size_t k = 0; k + 1 < PROFILE.size() / 2 + 1; k++) {
+			const size_t m = PROFILE.size() - 1 - k;
+			/* Columns across the end, for the leaves not to be streaks there. */
+			auto col = [&](size_t i) { return (PROFILE[i].first + 1.1f) * HEDGE_HALF_WIDTH * HEDGE_PIXELS; };
+			face({vertex(r, k, col(k)), vertex(r, k + 1, col(k + 1)), vertex(r, m - 1, col(m - 1)), vertex(r, m, col(m))},
+					{r.pos[k], r.pos[k + 1], r.pos[m - 1], r.pos[m]}, middle);
+		}
+	};
+
+	bool open = false;
+	for (int i = 0; i < segments; i++) {
+		const Ring &r0 = rings[i];
+		const Ring &r1 = rings[i + 1];
+		const float mid = (r0.a + r1.a) / 2;
+		if (gap.first < gap.second && mid > gap.first && mid < gap.second) {
+			if (open) end(r0, false);
+			open = false;
+			continue;
+		}
+		if (!open) end(r0, true);
+		open = true;
+		const Vec3 middle = point(mid, line, ground(mid, line) + HEDGE_HEIGHT / 2);
+		for (size_t k = 0; k + 1 < PROFILE.size(); k++) {
+			face({vertex(r0, k, r0.a * HEDGE_PIXELS), vertex(r1, k, r1.a * HEDGE_PIXELS), vertex(r1, k + 1, r1.a * HEDGE_PIXELS), vertex(r0, k + 1, r0.a * HEDGE_PIXELS)},
+					{r0.pos[k], r1.pos[k], r1.pos[k + 1], r0.pos[k + 1]}, middle);
+		}
+	}
+	if (open) end(rings.back(), false);
+}
+
+/**
+ * Add a dry stone wall along a side of a tile, following its ground, with the stones of the walls around foundations.
+ * @param tile The tile.
+ * @param axis The direction of the wall.
+ * @param line Where the middle of the wall stands across the tile, relative to its north corner.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ */
+void Renderer::AddFieldWall(TileIndex tile, Axis axis, float line, const std::array<float, CORNER_END> &corner_z, bool split_we)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	auto point = [&](float a, float c, float z) { return axis == AXIS_X ? Vec3{x0 + a, y0 + c, z} : Vec3{x0 + c, y0 + a, z}; };
+	auto ground = [&](float a, float c) { return axis == AXIS_X ? SurfaceZ(corner_z, split_we, a, c) : SurfaceZ(corner_z, split_we, c, a); };
+	constexpr int PARTS = 4;
+	constexpr float SUNK = 0.3f;
+	/* A side of the wall, with its ends in the order that makes it face away from the middle of the wall. */
+	auto side = [&](Vec3 a, Vec3 b, float ga, float gb, const Vec3 &middle) {
+		const Vec3 n = (b - a).Cross(Vec3{0, 0, -1});
+		if (n.Dot((a + b) * 0.5f - middle) < 0) {
+			std::swap(a, b);
+			std::swap(ga, gb);
+		}
+		this->AddFoundationSide(a, b, ga, gb);
+	};
+	for (int i = 0; i < PARTS; i++) {
+		const float a = static_cast<float>(TILE) * i / PARTS;
+		const float b = static_cast<float>(TILE) * (i + 1) / PARTS;
+		const float ga = ground(a, line);
+		const float gb = ground(b, line);
+		const Vec3 middle = point((a + b) / 2, line, (ga + gb) / 2);
+		std::array<Vec3, 4> top;
+		for (int s = 0; s < 2; s++) {
+			const float c = line + (s == 0 ? -1.0f : 1.0f) * FIELD_WALL_HALF_WIDTH;
+			const Vec3 pa = point(a, c, ga + FIELD_WALL_HEIGHT);
+			const Vec3 pb = point(b, c, gb + FIELD_WALL_HEIGHT);
+			side(pa, pb, ga - SUNK, gb - SUNK, middle);
+			top[s == 0 ? 0 : 2] = s == 0 ? pa : pb;
+			top[s == 0 ? 1 : 3] = s == 0 ? pb : pa;
+		}
+		this->AddFlatQuad(top, MASONRY_COLOUR * 0.92f, 1.0f);
+		/* The ends; hidden inside the walls of the tiles next to it, if they have one. */
+		if (i == 0 || i == PARTS - 1) {
+			const float e = i == 0 ? a : b;
+			const float ge = i == 0 ? ga : gb;
+			side(point(e, line - FIELD_WALL_HALF_WIDTH, ge + FIELD_WALL_HEIGHT), point(e, line + FIELD_WALL_HALF_WIDTH, ge + FIELD_WALL_HEIGHT), ge - SUNK, ge - SUNK, middle);
+		}
+	}
+}
+
+/**
  * Add the fences around a field, like hedges and stone walls, see DrawClearLandFence.
  * @param tile The tile.
  * @param corner_z Height of the corners of the ground of the tile.
  * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
  */
-void Renderer::AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we)
+void Renderer::AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
 {
 	if (!IsClearGround(tile, CLEAR_FIELDS) || IsSnowTile(tile)) return;
-	/* The sides with a fence, in the order the game draws their sprites, with the side of the tile whose ground each sprite stands on. */
+	/* The sides, with the axis along them and where they are across the tile. */
 	static const std::array<std::tuple<DiagDirection, Axis, float>, DIAGDIR_END> sides = {{
 		{DIAGDIR_NW, AXIS_X, 0.0f}, {DIAGDIR_NE, AXIS_Y, 0.0f}, {DIAGDIR_SW, AXIS_Y, TILE}, {DIAGDIR_SE, AXIS_X, TILE},
 	}};
-	auto box = this->box_sprites.begin();
+	const int segments = dist <= DETAIL_DIST ? HEDGE_SEGMENTS : 2;
 	for (const auto &[side, axis, edge] : sides) {
-		if (GetFence(tile, side) == 0) continue;
-		if (box == this->box_sprites.end() || box->bridge) return;
-		this->AddFence(*box, tile, axis, edge, corner_z, split_we);
-		++box;
+		const float line = edge == 0 ? FIELD_FENCE_INSET : TILE - FIELD_FENCE_INSET;
+		auto ends = [&](float from, float to) {
+			return axis == AXIS_X ? std::make_pair(std::make_pair(from, line), std::make_pair(to, line)) : std::make_pair(std::make_pair(line, from), std::make_pair(line, to));
+		};
+		switch (GetFence(tile, side)) {
+			case 0: break;
+			case 1: this->AddHedge(tile, axis, line, this->hedges[0], {}, corner_z, split_we, segments); break;
+			case 2: {
+				/* Bushes with a gate in the middle. */
+				constexpr std::pair<float, float> gate = {TILE / 2 - FIELD_GATE_WIDTH / 2, TILE / 2 + FIELD_GATE_WIDTH / 2};
+				this->AddHedge(tile, axis, line, this->hedges[0], gate, corner_z, split_we, HEDGE_SEGMENTS);
+				if (dist <= FENCE_DIST) {
+					const auto [from, to] = ends(gate.first, gate.second);
+					this->AddPostFence(tile, from, to, corner_z, split_we, FIELD_FENCE_COLOUR);
+				}
+				break;
+			}
+			case 3:
+				if (dist <= FENCE_DIST) {
+					const auto [from, to] = ends(0, TILE);
+					this->AddPostFence(tile, from, to, corner_z, split_we, FIELD_FENCE_COLOUR);
+				}
+				break;
+			case 4: this->AddHedge(tile, axis, line, this->hedges[1], {}, corner_z, split_we, segments); break;
+			case 5: this->AddHedge(tile, axis, line, this->hedges[2], {}, corner_z, split_we, segments); break;
+			default: this->AddFieldWall(tile, axis, line, corner_z, split_we); break;
+		}
 	}
 }
 
@@ -3555,11 +3669,9 @@ static std::optional<float> FindBridgeSide(const GroundTexture &tex, float sx, f
  * @param pal Its palette.
  * @param axis The direction of the side.
  * @param climb How much the side rises per unit along the axis, like a fence on a slope.
- * @param detail Whether the colours of the opaque pixels of the sprite stay as they are, like the leaves of a hedge,
- *               and only its outline is averaged.
  * @return The texture; without any pixels when the sprite has none.
  */
-const GroundTexture &Renderer::GetSideTexture(SpriteID image, PaletteID pal, Axis axis, float climb, bool detail)
+const GroundTexture &Renderer::GetSideTexture(SpriteID image, PaletteID pal, Axis axis, float climb)
 {
 	/* Starting with a marker that no other texture has. */
 	this->key.clear();
@@ -3568,7 +3680,6 @@ const GroundTexture &Renderer::GetSideTexture(SpriteID image, PaletteID pal, Axi
 	this->key.push_back(pal);
 	this->key.push_back(axis);
 	this->key.push_back(static_cast<int32_t>(std::lround(climb * 16)));
-	this->key.push_back(detail);
 	auto it = this->textures.find(this->key);
 	if (it != this->textures.end()) return it->second;
 	GroundTexture &tex = this->textures[this->key];
@@ -3610,12 +3721,7 @@ const GroundTexture &Renderer::GetSideTexture(SpriteID image, PaletteID pal, Axi
 			}
 			const size_t idx = static_cast<size_t>(y) * pic.width + x;
 			alpha[idx] = alpha_sum / SAMPLES;
-			if (detail && painted_alpha[idx] >= 0.5f) {
-				/* Premultiplied, like the averages. */
-				pic.pixels[idx] = painted.pixels[idx] * (alpha[idx] / painted_alpha[idx]);
-			} else {
-				pic.pixels[idx] = sum * (1.0f / SAMPLES);
-			}
+			pic.pixels[idx] = sum * (1.0f / SAMPLES);
 		}
 	}
 	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, false);

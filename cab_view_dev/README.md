@@ -255,6 +255,13 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   ním. Břehy jdou od země dolů k tůním. Textura řeky (i peřeje) leží na tůních jako dřív na svahu. Dřív voda ležela
   přímo na svahu (50 %) a z lodi vypadala jako strmá rampa.
 
+- **Ploty kolem polí** se už nekreslí ze spritů postavených na výšku (z blízka vypadaly jako betonová zeď), ale
+  podle druhu plotu (`GetFence`): keře a kvetoucí keře jsou živé plůtky (`AddHedge`), podlouhlé valy listí
+  zakulacené nahoře, 3,2 jednotky vysoké, s výškou a šířkou mírně kolísající podél (šum podle souřadnic světa, takže
+  sousední dlaždice navazují), s texturou trsů listí (`MakeHedgeTexture`, žluté nebo červené květy u kvetoucích).
+  Keře s brankou mají uprostřed dřevěnou branku, dřevěný plot je z kůlů a latí (`AddPostFence`), kamenná zídka je
+  nízká zeď z kamenů základů (`AddFieldWall`). Daleko se plůtky kreslí jen ze 2 dílů místo 8.
+
 ### Detail země
 
 - Grafika OpenGFX má jen pár pixelů na dlaždici (tráva 64×32), takže zblízka byla zem rozmazaná a dlaždice
