@@ -44,7 +44,7 @@ jobs:
         cd ~/Documents/OpenTTD/baseset
 
         echo "::group::Download OpenGFX"
-        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        curl -fL --retry 5 --retry-delay 10 --retry-all-errors --speed-limit 10000 --speed-time 30 https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
         echo "::endgroup::"
 
         echo "::group::Unpack OpenGFX"
