@@ -33,6 +33,7 @@
 #include "rail_map.h"
 #include "road_map.h"
 #include "station_map.h"
+#include "settings_type.h"
 #include "track_func.h"
 #include "spritecache.h"
 #include "spriteloader/spriteloader.hpp"
@@ -80,6 +81,16 @@ constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles i
 constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
 constexpr float ISO_UNITS = 0.3536f; ///< Width of a sprite pixel across the view, in world units; the isometric view draws a unit as 2 * sqrt(2) pixels.
 constexpr float MIN_ROOF_HEIGHT = 3.0f; ///< A building is given a roof when its sprite reaches at least this much above its walls.
+constexpr float SIGNAL_HEIGHT = 6.0f; ///< Height of the top of a signal above the track.
+constexpr float SIGNAL_HEAD_HEIGHT = 2.4f; ///< Height of the head of a signal, with its lamps.
+constexpr float SIGNAL_HEAD_WIDTH = 1.1f; ///< Width of the head of a signal.
+constexpr float SIGNAL_LAMP_SIZE = 0.7f; ///< Size of a lamp of a signal; larger than real, so it can be seen from afar.
+
+/** Direction each way something can face goes to, in world coordinates. */
+constexpr std::array<std::pair<float, float>, DIR_END> HEADINGS = {{
+	{-1, -1}, {-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {1, -1}, {0, -1},
+}};
+
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
 constexpr size_t MAX_NEW_TEXTURES_TIMED = 32; ///< Pictures that make more new textures don't count for the average time of a picture.
 constexpr int MAX_THREADS = 8; ///< At most this many threads draw the picture.
@@ -109,6 +120,13 @@ constexpr RGB RAIL_COLOUR = {200, 200, 200}; ///< Colour of the rails.
 constexpr RGB RAIL_FAR_COLOUR = {104, 92, 80}; ///< Colour of far away rails, about that of the ballast under them.
 constexpr RGB SLEEPER_COLOUR = {72, 44, 4}; ///< Colour of the sleepers.
 constexpr RGB FOUNDATION_COLOUR = {132, 112, 88}; ///< Colour of the sides of foundations.
+constexpr RGB SIGNAL_POST_COLOUR = {96, 96, 100}; ///< Colour of the post of a signal.
+constexpr RGB SIGNAL_HEAD_COLOUR = {30, 30, 32}; ///< Colour of the head of a signal.
+constexpr RGB SIGNAL_RED_LIT = {255, 40, 24}; ///< Colour of the red lamp of a signal showing stop.
+constexpr RGB SIGNAL_RED_DARK = {84, 28, 22}; ///< Colour of the red lamp of a signal showing go.
+constexpr RGB SIGNAL_GREEN_LIT = {48, 255, 96}; ///< Colour of the green lamp of a signal showing go.
+constexpr RGB SIGNAL_GREEN_DARK = {22, 72, 38}; ///< Colour of the green lamp of a signal showing stop.
+constexpr RGB SEMAPHORE_ARM_COLOUR = {196, 28, 24}; ///< Colour of the arm of a semaphore signal.
 
 /** A vector in world coordinates. */
 struct Vec3 {
@@ -359,6 +377,17 @@ struct BuildingShape {
 	float foot_row = 0; ///< Row of the sprite at the foot of the cut-out, relative to where the sprite is drawn.
 };
 
+/**
+ * Whether a sprite is the building of the default rail stations.
+ * @param image The sprite.
+ * @return True for the building along either axis.
+ */
+static bool IsDefaultStationBuilding(SpriteID image)
+{
+	const SpriteID sprite = image & SPRITE_MASK;
+	return sprite == SPR_RAIL_PLATFORM_BUILDING_X || sprite == SPR_RAIL_PLATFORM_BUILDING_Y;
+}
+
 /** Camera with its projection. */
 struct Camera {
 	Vec3 pos; ///< Position of the eye.
@@ -461,7 +490,7 @@ private:
 
 	void AddTriangle(const std::array<ClipVertex, 3> &tri, const Paint &paint);
 	void SetupTriangle(const ClipVertex &a, const ClipVertex &b, const ClipVertex &c, const Paint &paint);
-	void AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias);
+	void AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias, bool lit = false);
 	void Rasterise(int stripe, int stripes);
 
 	void DrawSky();
@@ -472,6 +501,7 @@ private:
 	void AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station);
 	void AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_col, float foot_row, float scale_h, float scale_v);
 	void AddBillboard(const BoxSpriteToDraw &box);
+	bool AddSignal(TileIndex tile, const BoxSpriteToDraw &box);
 	void AddVehicles();
 	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
 	void AddSpriteWalls(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, const std::array<float, 4> &tops, float band, bool cutout);
@@ -863,16 +893,17 @@ void Renderer::SetupTriangle(const ClipVertex &a, const ClipVertex &b, const Cli
 }
 
 /**
- * Add a flat coloured quad, shaded by its orientation.
+ * Add a flat coloured quad, shaded by its orientation unless it gives light.
  * @param quad The corners in world coordinates, in order around the quad.
  * @param colour The colour.
  * @param bias Depth bias.
+ * @param lit Whether it gives light, like a lamp, and so is not shaded.
  */
-void Renderer::AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias)
+void Renderer::AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias, bool lit)
 {
 	Vec3 normal = (quad[1] - quad[0]).Cross(quad[2] - quad[0]);
 	if (normal.z < 0) normal = normal * -1;
-	Paint paint = {nullptr, colour * Shade(normal), 1.0f, 0, bias};
+	Paint paint = {nullptr, lit ? colour : colour * Shade(normal), 1.0f, 0, bias};
 
 	std::array<ClipVertex, 4> v;
 	for (int i = 0; i < 4; i++) v[i] = {this->cam.ToCamera(quad[i]), {}};
@@ -1112,15 +1143,25 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					/* Station buildings, standing on the ground, get their real shape; platforms and roofs stay boxes. */
 					if (!box.child && box.zmax - box.zmin >= 10 && box.zmin <= z + 1) {
 						this->AddBuilding(box, BUILDING_HEIGHT, true);
+						if (IsDefaultStationBuilding(box.image)) {
+							/* Its platform, around the building. */
+							BoxSpriteToDraw platform = box;
+							platform.zmax = platform.zmin + 1;
+							this->AddBox(platform, z, 1.0f);
+						}
 						break;
 					}
+					[[fallthrough]];
+
+				case MP_RAILWAY:
+					if (!box.child && this->AddSignal(tile, box)) break;
 					[[fallthrough]];
 
 				default:
 					if (box.child) break;
 					/* Fences along the edges of the tile don't map well onto their thin boxes; leave them out. */
 					if (std::min(box.xmax - box.xmin, box.ymax - box.ymin) == 0 && std::max(box.xmax - box.xmin, box.ymax - box.ymin) >= 8) break;
-					/* Thin things like signals and lamps stand as cut-outs. */
+					/* Thin things like lamps and catenary pylons stand as cut-outs. */
 					if (box.xmax - box.xmin < 2 && box.ymax - box.ymin < 2) {
 						this->AddBillboard(box);
 					} else {
@@ -1465,6 +1506,20 @@ const BuildingShape &Renderer::GetBuildingShape(const BoxSpriteToDraw &box, bool
 	shape.walls = {bz, bz, bz, bz};
 	shape.band = std::min(2.0f, bz / 3);
 
+	if (station && IsDefaultStationBuilding(box.image)) {
+		/* The building of the default rail stations stands on its platform, which fools the fitting below; its
+		 * walls go up two thirds of the box, and its gable roof along the platform up to the top of the box. */
+		const bool along_x = (box.image & SPRITE_MASK) == SPR_RAIL_PLATFORM_BUILDING_X;
+		shape.x0 = along_x ? 1.5f : 0.0f;
+		shape.y0 = along_x ? 0.0f : 1.5f;
+		shape.x1 = along_x ? bx - 2 : bx - 1;
+		shape.y1 = along_x ? by - 1 : by - 2;
+		shape.walls.fill(bz * 2 / 3);
+		shape.roof = along_x ? RoofKind::GableX : RoofKind::GableY;
+		shape.ridge = bz;
+		return shape;
+	}
+
 	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal, false);
 	const Picture &pic = tex.levels[0];
 	if (pic.alpha.empty()) return shape;
@@ -1565,14 +1620,16 @@ const BuildingShape &Renderer::GetBuildingShape(const BoxSpriteToDraw &box, bool
 
 	/* Fit a box, with a hip roof or a roof sloping one way, by changing one number at a time while that helps. */
 	SpriteFit fit(tex, ax, ay);
-	auto valid = [&](const std::array<float, 7> &v) {
+	auto valid = [&](const std::array<float, 7> &v, WallSlope slope) {
+		/* A roof sloping one way starts at least halfway up; lower, it looks like a ramp, not a building. */
+		if (slope != WallSlope::Level && 2 * std::min(v[4], v[5]) < std::max(v[4], v[5])) return false;
 		return v[0] >= 0 && v[1] >= 0 && v[2] <= bx && v[3] <= by && v[2] - v[0] >= 1 && v[3] - v[1] >= 1 && v[4] >= 1 && v[5] >= 1 &&
 				v[4] <= 1.5f * bz + 4 && v[6] <= v[4] + 1.5f * std::max(v[2] - v[0], v[3] - v[1]);
 	};
 	auto descend = [&](std::array<float, 7> v, WallSlope slope) {
 		int best = fit.Measure(MakeShapeTry(v, slope)).score;
 		auto attempt = [&](const std::array<float, 7> &w) {
-			if (!valid(w)) return false;
+			if (!valid(w, slope)) return false;
 			const int score = fit.Measure(MakeShapeTry(w, slope)).score;
 			if (score <= best) return false;
 			best = score;
@@ -1655,10 +1712,10 @@ const BuildingShape &Renderer::GetBuildingShape(const BoxSpriteToDraw &box, bool
 			const float low = std::min(*west, *east), high = std::max(*west, *east);
 			if (!differ) {
 				result.walls = {low, low, low, low};
-			} else if (best_slope == WallSlope::AlongX) {
-				result.walls = {*west, *west, *east, *east};
-			} else if (best_slope == WallSlope::AlongY) {
-				result.walls = {*east, *west, *west, *east};
+			} else if (best_slope != WallSlope::Level) {
+				/* Not lower than halfway up on the low side either, see above. */
+				const float w = std::max(*west, *east / 2), e = std::max(*east, *west / 2);
+				result.walls = best_slope == WallSlope::AlongX ? std::array<float, 4>{w, w, e, e} : std::array<float, 4>{e, w, w, e};
 			} else {
 				/* Not a simple house; the walls reach up to the top of both corners and the sprite shows the rest. */
 				result.walls = {high, high, high, high};
@@ -1877,14 +1934,106 @@ void Renderer::AddBillboard(const BoxSpriteToDraw &box)
 	this->AddCutout(this->GetBoxTexture(box.image, box.pal, false), foot, 0, 0, CUTOUT_UNITS, CUTOUT_UNITS);
 }
 
+/**
+ * Add a signal where the viewport draws the sprite of one: a post with a head facing the trains it stops, whose
+ * red or green lamp is lit as the signal shows, or the arm of a semaphore raised or not.
+ * @param tile The tile.
+ * @param box The sprite and its box.
+ * @return Whether the box is that of a signal; it is then drawn.
+ */
+bool Renderer::AddSignal(TileIndex tile, const BoxSpriteToDraw &box)
+{
+	if (!IsPlainRailTile(tile) || !HasSignals(tile) || box.xmin != box.xmax || box.ymin != box.ymax) return false;
+
+	/* The signals of each track, where the game draws them, see DrawSignals and DrawSingleSignal. */
+	struct SignalSpot {
+		uint8_t bit; ///< Bit of the signal in the map.
+		Track track; ///< Track it stands at.
+		Direction dir; ///< Direction the trains it stops go to.
+		std::array<std::array<uint8_t, 2>, 2> pos; ///< Where it stands in the tile, when on the left and on the right of the track.
+	};
+	static const std::array<SignalSpot, 12> spots = {{
+		{2, TRACK_LEFT, DIR_S, {{{8, 5}, {14, 1}}}}, {3, TRACK_LEFT, DIR_N, {{{14, 1}, {12, 10}}}},
+		{0, TRACK_RIGHT, DIR_S, {{{1, 14}, {4, 6}}}}, {1, TRACK_RIGHT, DIR_N, {{{9, 11}, {1, 14}}}},
+		{3, TRACK_UPPER, DIR_E, {{{1, 0}, {10, 4}}}}, {2, TRACK_UPPER, DIR_W, {{{3, 10}, {0, 1}}}},
+		{1, TRACK_LOWER, DIR_E, {{{11, 4}, {14, 14}}}}, {0, TRACK_LOWER, DIR_W, {{{14, 14}, {5, 12}}}},
+		{3, TRACK_X, DIR_NE, {{{11, 3}, {11, 13}}}}, {2, TRACK_X, DIR_SW, {{{4, 13}, {4, 3}}}},
+		{3, TRACK_Y, DIR_SE, {{{3, 4}, {13, 4}}}}, {2, TRACK_Y, DIR_NW, {{{11, 13}, {3, 11}}}},
+	}};
+	bool right;
+	switch (_settings_game.construction.train_signal_side) {
+		case 0: right = false; break;
+		case 2: right = true; break;
+		default: right = _settings_game.vehicle.road_side != 0; break;
+	}
+
+	const TrackBits rails = GetTrackBits(tile);
+	for (const SignalSpot &spot : spots) {
+		/* The same bits are the signals of the straight track or of the diagonal ones, whichever the tile has. */
+		bool used;
+		switch (spot.track) {
+			case TRACK_Y: used = (rails & TRACK_BIT_Y) != TRACK_BIT_NONE; break;
+			case TRACK_X: used = (rails & TRACK_BIT_Y) == TRACK_BIT_NONE && (rails & TRACK_BIT_X) != TRACK_BIT_NONE; break;
+			default: used = (rails & TRACK_BIT_CROSS) == TRACK_BIT_NONE && (rails & TrackToTrackBits(spot.track)) != TRACK_BIT_NONE; break;
+		}
+		if (!used) continue;
+		if (!IsSignalPresent(tile, spot.bit)) continue;
+		if (box.xmin != static_cast<int>(TileX(tile) * TILE_SIZE + spot.pos[right][0]) || box.ymin != static_cast<int>(TileY(tile) * TILE_SIZE + spot.pos[right][1])) continue;
+
+		const bool go = GetSingleSignalState(tile, spot.bit) == SIGNAL_STATE_GREEN;
+		const auto [dx, dy] = HEADINGS[spot.dir];
+		/* Towards the trains it stops, and to its side, away from the track. */
+		const Vec3 face = Vec3{-dx, -dy, 0}.Normalised();
+		const Vec3 side = Vec3{dy, -dx, 0}.Normalised() * (right ? 1.0f : -1.0f);
+		const Vec3 foot = {box.xmin + 0.5f, box.ymin + 0.5f, static_cast<float>(box.zmin)};
+
+		/* A block from z0 to z1, centred on c, half_face deep and half_side wide. */
+		auto block = [&](const Vec3 &c, float half_face, float half_side, float z0, float z1, const RGB &colour) {
+			const Vec3 f = face * half_face, w = side * half_side;
+			std::array<Vec3, 4> ring = {c + f + w, c + f - w, c - f - w, c - f + w};
+			for (int i = 0; i < 4; i++) {
+				const Vec3 a = ring[i], b = ring[(i + 1) % 4];
+				this->AddFlatQuad({Vec3{a.x, a.y, z0}, Vec3{b.x, b.y, z0}, Vec3{b.x, b.y, z1}, Vec3{a.x, a.y, z1}}, colour, 1.0f);
+			}
+			this->AddFlatQuad({Vec3{ring[0].x, ring[0].y, z1}, Vec3{ring[1].x, ring[1].y, z1}, Vec3{ring[2].x, ring[2].y, z1}, Vec3{ring[3].x, ring[3].y, z1}}, colour, 1.0f);
+		};
+		/* A square on the front of the head, lit or not. */
+		auto lamp = [&](float z, const RGB &colour, bool lit) {
+			Vec3 c = foot + face * 0.32f;
+			c.z = 0;
+			const Vec3 w = side * (SIGNAL_LAMP_SIZE / 2);
+			const float h = SIGNAL_LAMP_SIZE / 2;
+			this->AddFlatQuad({c + w + Vec3{0, 0, z - h}, c - w + Vec3{0, 0, z - h}, c - w + Vec3{0, 0, z + h}, c + w + Vec3{0, 0, z + h}}, colour, 1.0f, lit);
+		};
+
+		const bool semaphore = GetSignalVariant(tile, spot.track) == SIG_SEMAPHORE;
+		const float top = foot.z + SIGNAL_HEIGHT;
+		block(foot, 0.15f, 0.15f, foot.z, semaphore ? top : top - SIGNAL_HEAD_HEIGHT, SIGNAL_POST_COLOUR);
+		if (semaphore) {
+			/* The arm sticks out away from the track; level to stop, raised to let trains go. */
+			Vec3 c = foot + face * 0.2f;
+			c.z = 0;
+			const float rise = go ? 0.7f : 0.0f;
+			const float len = SIGNAL_HEAD_HEIGHT;
+			const Vec3 tip = c + side * (len * (go ? 0.7f : 1.0f));
+			const float z = top - 0.5f;
+			this->AddFlatQuad({c + Vec3{0, 0, z - 0.3f}, tip + Vec3{0, 0, z - 0.3f + len * rise}, tip + Vec3{0, 0, z + 0.3f + len * rise}, c + Vec3{0, 0, z + 0.3f}}, SEMAPHORE_ARM_COLOUR, 1.0f);
+			/* Its lamp, in a housing that hides it from behind. */
+			block(foot + face * 0.17f, 0.14f, SIGNAL_LAMP_SIZE * 0.65f, z - 1.0f - SIGNAL_LAMP_SIZE * 0.65f, z - 1.0f + SIGNAL_LAMP_SIZE * 0.65f, SIGNAL_HEAD_COLOUR);
+			lamp(z - 1.0f, go ? SIGNAL_GREEN_LIT : SIGNAL_RED_LIT, true);
+		} else {
+			block(foot, 0.3f, SIGNAL_HEAD_WIDTH / 2, top - SIGNAL_HEAD_HEIGHT, top, SIGNAL_HEAD_COLOUR);
+			lamp(top - SIGNAL_HEAD_HEIGHT * 0.3f, go ? SIGNAL_RED_DARK : SIGNAL_RED_LIT, !go);
+			lamp(top - SIGNAL_HEAD_HEIGHT * 0.7f, go ? SIGNAL_GREEN_LIT : SIGNAL_GREEN_DARK, go);
+		}
+		return true;
+	}
+	return false;
+}
+
 /** Add the trains and road vehicles around the camera, as boxes dressed in their sprites. */
 void Renderer::AddVehicles()
 {
-	/* Direction each way a vehicle can face goes to, in world coordinates. */
-	static const std::array<std::pair<float, float>, DIR_END> headings = {{
-		{-1, -1}, {-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {1, -1}, {0, -1},
-	}};
-
 	for (const Vehicle *v : Vehicle::Iterate()) {
 		if (v->type != VEH_TRAIN && v->type != VEH_ROAD) continue;
 		if (v->vehstatus.Test(VehState::Hidden)) continue;
@@ -1910,7 +2059,7 @@ void Renderer::AddVehicles()
 		float width = std::clamp(pic.width / 2.0f - length, 1.5f, std::max(length, 1.5f));
 		float height = std::clamp(-*top - (length + width) / 2, 2.0f, 40.0f);
 
-		auto [hx, hy] = headings[v->direction];
+		auto [hx, hy] = HEADINGS[v->direction];
 		float angle = std::atan2(hy, hx);
 		Placement pl;
 		pl.origin = {static_cast<float>(v->x_pos), static_cast<float>(v->y_pos), static_cast<float>(v->z_pos)};

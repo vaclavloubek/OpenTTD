@@ -101,15 +101,25 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   jsou 0,6× výšky ve spritu (izometrie budovy převyšuje), jako v návrhu C, i u budov nádraží. Nejnižší pás stěny
   bere obrázek těsně nad ním, aby spodní hrana nebyla zubatá a aby zakryl, co pod budovou kreslí sprite země.
   Na Linuxu trvá rozpoznání jednoho spritu kolem 1 ms (nejvýš 2 ms).
-- **Stromy a návěstidla** (a jiné tenké věci) jsou výřezy otočené ke kameře (0,28 jednotky na pixel spritu),
+  Budova výchozího nádraží má tvar daný ručně (stěny do 2/3 boxu, sedlová střecha podél nástupiště až
+  k vršku boxu, pod ní nízké nástupiště), protože stojí na nástupišti a prokládání ji dělalo „šikmou deskou“.
+  U ostatních budov nádraží střecha skloněná na jednu stranu začíná aspoň v polovině výšky.
+- **Návěstidla** jsou skutečná 3D: šedý sloupek (6 jednotek) s černou hlavou otočenou k vlakům, které zastavuje,
+  na místě a straně trati, kde je kreslí hra (`DrawSignals`, nastavení strany návěstidel). Červené a zelené
+  světlo svítí podle stavu návěstidla ve hře, zhasnuté je tmavé. Mechanická návěstidla mají červené rameno
+  od trati – vodorovné = stůj, zvednuté šikmo = volno – a pod ním světlo v černém pouzdře. Hlava i pouzdro
+  zakrývají světla zezadu.
+- **Stromy** (a jiné tenké věci jako sloupy trolejí) jsou výřezy otočené ke kameře (0,28 jednotky na pixel spritu),
   bez rozšiřování neprůhledné oblasti, aby zůstaly štíhlé.
 - **Ostatní vlaky a silniční vozidla** jsou kvádry podél směru jízdy, potažené spritem vozidla jedoucího na
   jihozápad (délka z hry, šířka a výška ze spritu). Vozidlo, na kterém je kamera, se vynechává.
 - Budovy, stromy, návěstidla a vozidla se kreslí do 32 dlaždic. Ploty polí a ploty podél kolejí se zatím
   vynechávají (na tenké kvádry se jejich sprity nepromítají dobře).
-- Testovací AI staví dvě dvojitá návěstidla na trati a vedle ní druhou rovnou trať s vlakem.
+- Testovací AI staví dvě dvojitá návěstidla na trati a vedle ní druhou rovnou trať s vlakem (na zkoušku
+  návěstidel spustit novou hru s AI; vlak #1 v `kabina3d.sav` kolem žádných neprojíždí).
 - Zbývá: mosty a portály tunelů v detailu, silnice. Na Macu (13. 10.) byly vidět les jako zelený kvádr, sila
-  jako šedé „šipky“ a budova nádraží jako vysoký sloup; opraveno novým rozpoznáním tvaru výše.
+  jako šedé „šipky“ a budova nádraží jako vysoký sloup; opraveno novým rozpoznáním tvaru výše. Pak budova
+  nádraží jako šikmá deska a návěstidla jako tři zelené obrázky nad sebou; opraveno tvarem nádraží a 3D návěstidly.
 
 ## Další kroky
 
