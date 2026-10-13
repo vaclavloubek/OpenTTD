@@ -6,7 +6,7 @@
  */
 
 /**
- * @file cab_view_3d.cpp Software rendered 3D view from the cab of a train.
+ * @file cab_view_3d.cpp Software rendered 3D view from the cab of a train, a ship or an aircraft.
  *
  * The view is drawn by the game itself, without OpenGL, into its own buffer at the full
  * resolution of the screen, and then put on the screen as one sprite of the current blitter.
@@ -38,6 +38,7 @@
 #include "tunnel_map.h"
 #include "tunnelbridge_map.h"
 #include "clear_map.h"
+#include "water_map.h"
 #include "rail.h"
 #include "newgrf_railtype.h"
 #include "road.h"
@@ -55,6 +56,7 @@
 #include "vehicle_func.h"
 #include "train.h"
 #include "roadveh.h"
+#include "ship.h"
 #include "aircraft.h"
 
 #include "table/sprites.h"
@@ -76,6 +78,8 @@ constexpr float FOG_START = 14.0f * TILE; ///< Distance where the haze starts.
 constexpr float FOG_END = VIEW_TILES * TILE; ///< Distance where everything has melted into the haze.
 constexpr float MAX_FOG_LIFT = 15.0f * TILE; ///< How much further away the haze starts at most when looking down from an aircraft, see #CabViewCamera::altitude.
 constexpr float AIRCRAFT_UNITS = 0.4f; ///< Size of a sprite pixel of an aircraft, in world units.
+constexpr float SHIP_UNITS = 0.4f; ///< Size of a sprite pixel of a ship, in world units.
+constexpr float SHIP_MIN_UPRIGHT = 0.4f; ///< How much the sprite of a ship seen from straight ahead or behind is shrunk upwards, see #Renderer::AddShip.
 constexpr float FOV_DEG = 64.0f; ///< Horizontal field of view.
 constexpr float PITCH_DEG = -6.0f; ///< How much the camera looks down.
 constexpr float NEAR = 0.5f; ///< Near clipping distance.
@@ -108,6 +112,11 @@ constexpr float DECK_DEPTH = 2.0f; ///< Thickness of the deck of a bridge, below
 constexpr float PILLAR_SIZE = 2.4f; ///< Width of a pillar under a bridge.
 constexpr float AQUEDUCT_WALL = 1.2f; ///< Thickness of the walls along the water of an aqueduct.
 constexpr float AQUEDUCT_WALL_HEIGHT = 2.0f; ///< Height of the walls along the water of an aqueduct.
+constexpr float LOCK_WALL = 1.0f; ///< Thickness of the walls along the sides of a lock.
+constexpr float LOCK_WALL_TOP = 1.0f; ///< How far the walls of a lock reach above the land at its upper end.
+constexpr float LOCK_GATE = 0.8f; ///< Thickness of the gates of a lock.
+constexpr float LOCK_GATE_GAP = 0.12f; ///< Half the width of the seam where the two leaves of a gate of a lock meet.
+constexpr float LOCK_WALKWAY = 0.3f; ///< Thickness of the walkway on top of the gates of a lock, and how far it sticks out.
 constexpr float BRIDGE_DECK_EDGE = 2.0f; ///< How far the edges of the deck of a bridge are from the sides of its tiles.
 constexpr float RAMP_EDGE = 2.5f; ///< How far the edges of the deck of a bridge ramp are from the sides of its tile.
 constexpr float BRIDGE_SIDE_PLANE = 13.5f; ///< Where the near side of a bridge stands across its tiles when its sprite does not tell.
@@ -198,6 +207,10 @@ constexpr RGB BOOTH_COLOUR = {150, 72, 52}; ///< Colour of the brick booths of l
 constexpr RGB TUNNEL_ROAD_LIT = {84, 84, 84}; ///< Colour of the road inside a tunnel at its entrances.
 constexpr RGB TUNNEL_ROAD_DARK = {14, 14, 14}; ///< Colour of the road deep inside a tunnel.
 constexpr RGB AQUEDUCT_COLOUR = {178, 174, 166}; ///< Colour of the stone of aqueducts.
+constexpr RGB BANK_COLOUR = {120, 112, 100}; ///< Colour of the banks of canals, rivers and the sea, between the water and the land.
+constexpr RGB LOCK_COLOUR = {150, 146, 138}; ///< Colour of the stone walls of locks.
+constexpr RGB LOCK_GATE_COLOUR = {70, 52, 36}; ///< Colour of the wooden gates of locks.
+constexpr RGB LOCK_GATE_GAP_COLOUR = {28, 22, 16}; ///< Colour of the seam between the leaves of a gate of a lock.
 
 /** A vector in world coordinates. */
 struct Vec3 {
@@ -550,6 +563,7 @@ private:
 	std::vector<uint32_t> frame; ///< Colour buffer, see #Pack.
 	std::vector<float> depth; ///< Inverse depth buffer; 0 is infinitely far.
 	Camera cam; ///< The current camera.
+	VehicleID own = VehicleID::Invalid(); ///< The vehicle the camera rides on.
 	bool frame_valid = false; ///< Whether #frame holds a finished picture.
 	CabViewCamera frame_camera; ///< Camera of the picture in #frame.
 	float fog_start = FOG_START; ///< Distance where the haze starts in the current picture.
@@ -582,6 +596,9 @@ private:
 	void AddFlatQuad(const std::array<Vec3, 4> &quad, const RGB &colour, float bias, bool lit = false);
 	void AddFlatPolygon(std::span<const Vec3> pts, const RGB &colour, float bias, bool lit = false);
 	void AddFlatBox(const Vec3 &lo, const Vec3 &hi, const RGB &colour);
+	float GetLockWater(TileIndex tile, int lower);
+	void AddLock(TileIndex tile, const std::array<float, CORNER_END> &corner_z, float water);
+	void AddBanks(TileIndex tile, const std::array<float, CORNER_END> &land_z, const std::array<float, CORNER_END> &water_z);
 	void Rasterise(int stripe, int stripes);
 
 	void DrawSky();
@@ -610,6 +627,8 @@ private:
 	void AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we);
 	bool AddRailFence(TileIndex tile, const BoxSpriteToDraw &box, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddVehicles(VehicleID own);
+	Direction GetShownDirection(Direction dir) const;
+	void AddShip(const Ship *v);
 	void AddAircraft(const Aircraft *v);
 	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
 	void AddTexturedFace(const GroundTexture &tex, float sx, float sy, std::span<const Vec3> world, std::span<const Vec3> shown, const Vec3 &normal, bool cutout);
@@ -924,6 +943,34 @@ static void SetTunnelGround(TileIndex tile, int z, std::vector<GroundSpriteToDra
 }
 
 /**
+ * Whether a tile is the middle part of a lock, where the ships go up and down.
+ * @param tile The tile.
+ * @return True for the middle of a lock.
+ */
+static bool IsLockMiddle(TileIndex tile)
+{
+	return IsTileType(tile, MP_WATER) && IsLock(tile) && GetLockPart(tile) == LockPart::Middle;
+}
+
+/**
+ * Whether the 3D view shows a tile as water a bit below the land around it, see #CAB_VIEW_3D_WATER_DROP.
+ * That are canals, rivers (also where they flow down a slope), the sea, ship depots, the ends of locks,
+ * and buoys, the water part of docks and oil rigs. Not the shore, half land and half water, and not the
+ * middle of locks, see Renderer::AddLock.
+ * @param tile The tile.
+ * @return True for such water.
+ */
+static bool IsLoweredWater(TileIndex tile)
+{
+	switch (GetTileType(tile)) {
+		case MP_WATER: return !IsCoastTile(tile) && !IsLockMiddle(tile);
+		case MP_STATION:
+		case MP_INDUSTRY: return IsTileOnWater(tile) && GetTileSlope(tile) == SLOPE_FLAT;
+		default: return false;
+	}
+}
+
+/**
  * Get the ground texture of a tile, putting it together from the tile's ground sprites when needed.
  * Tiles that look the same share the texture.
  * @param tile The tile.
@@ -938,6 +985,8 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 	this->box_sprites.clear();
 	CollectTileGroundSprites(tile, this->ground_sprites, boxes ? &this->box_sprites : nullptr);
 	if (IsTunnelTile(tile)) SetTunnelGround(tile, tile_z, this->ground_sprites);
+	/* Water below the land has banks of its own, see AddBanks; leave out those painted on the water. */
+	if (IsLoweredWater(tile) && this->ground_sprites.size() > 1) this->ground_sprites.resize(1);
 	if (IsLevelCrossingTile(tile) && IsCrossingBarred(tile)) {
 		/* The lit lamps painted on the ground of a closed crossing are on the posts, see AddCrossing. */
 		const SpriteID crossing = GetRailTypeInfo(GetRailType(tile))->base_sprites.crossing;
@@ -1381,6 +1430,24 @@ void Renderer::AddTile(TileIndex tile, float dist)
 
 	std::array<float, CORNER_END> corner_z;
 	for (Corner c : ALL_CORNERS) corner_z[c] = static_cast<float>(z + GetSlopePixelZInCorner(slope, c));
+	/* The land, which the sprites of the ground are drawn for. */
+	const std::array<float, CORNER_END> land_z = corner_z;
+	/* Water lies a bit below the land around it; in the chamber of a lock as high as the ship in it, see AddLock. */
+	const bool lock = IsLockMiddle(tile);
+	const int drop = IsLoweredWater(tile) ? CAB_VIEW_3D_WATER_DROP : 0;
+	const float lock_water = lock ? this->GetLockWater(tile, z) : 0.0f;
+	/* The shore slopes into the water: its corners at the water go down with it. */
+	const bool shore = IsTileType(tile, MP_WATER) && IsCoastTile(tile);
+	const float shore_level = *std::ranges::min_element(corner_z);
+	for (Corner c : ALL_CORNERS) {
+		if (lock) {
+			corner_z[c] = lock_water;
+		} else if (shore) {
+			if (corner_z[c] == shore_level) corner_z[c] -= CAB_VIEW_3D_WATER_DROP;
+		} else {
+			corner_z[c] -= drop;
+		}
+	}
 	/* The game splits a slope along the line between the two corners at the same height. */
 	bool split_we = corner_z[CORNER_W] == corner_z[CORNER_E] || corner_z[CORNER_N] != corner_z[CORNER_S];
 
@@ -1409,10 +1476,9 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	/* Attributes: screen column and row in the texture, and world x and y for the fine pattern. */
 	auto vertex = [&](Corner c) {
 		Point o = CornerOffset(c);
-		float h = corner_z[c];
 		ClipVertex v;
-		v.c = this->cam.ToCamera({x0 + o.x, y0 + o.y, h});
-		v.a = {2.0f * (o.y - o.x), static_cast<float>(o.x + o.y) - (h - raw_z), x0 + o.x, y0 + o.y};
+		v.c = this->cam.ToCamera({x0 + o.x, y0 + o.y, corner_z[c]});
+		v.a = {2.0f * (o.y - o.x), static_cast<float>(o.x + o.y) - (land_z[c] - raw_z), x0 + o.x, y0 + o.y};
 		return v;
 	};
 	std::array<ClipVertex, CORNER_END> v;
@@ -1450,14 +1516,20 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	this->AddTrack(tile, tracks, corner_z, split_we, dist);
 	if (road_bits != ROAD_NONE) this->AddRoad(tile, road, tex, raw_z, corner_z, split_we, dist);
 	if (boxes && road.stop) this->AddRoadStop(tile, corner_z, split_we);
+	if (lock) this->AddLock(tile, land_z, lock_water);
+	if (drop != 0 || shore) this->AddBanks(tile, land_z, corner_z);
 	if (tunnel) this->AddTunnelPortal(tile, raw_z);
 	if (IsBridgeTile(tile)) this->AddBridgeRamp(tile, raw_z, corner_z, split_we, dist);
 	if (IsBridgeAbove(tile)) this->AddBridgeMiddle(tile, corner_z, split_we, dist);
 	if (boxes && IsLevelCrossingTile(tile)) this->AddCrossing(tile, z);
 	if (boxes && IsTileType(tile, MP_CLEAR)) this->AddFieldFences(tile, corner_z, split_we);
-	if (boxes) {
-		for (const BoxSpriteToDraw &box : this->box_sprites) {
+	/* The walls and gates of locks are drawn whole, see AddLock. */
+	if (boxes && !lock) {
+		for (BoxSpriteToDraw &box : this->box_sprites) {
 			if (box.bridge) continue;
+			/* Buoys and ship depots float on the water. */
+			box.zmin -= drop;
+			box.zmax -= drop;
 			switch (GetTileType(tile)) {
 				case MP_TUNNELBRIDGE:
 					/* Ramps and tunnel portals are drawn as a whole. */
@@ -1531,6 +1603,105 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					break;
 			}
 		}
+	}
+}
+
+/**
+ * Get how high the water in the chamber of a lock is: as high as the ship in it, or, when the ship the camera
+ * is on is about to sail in, as high as that ship, so it does not jump when it does; else at its lower end.
+ * @param tile The middle of the lock.
+ * @param lower Height of the lower end of the lock.
+ * @return The height of the water.
+ */
+float Renderer::GetLockWater(TileIndex tile, int lower)
+{
+	const Vehicle *own = Vehicle::GetIfValid(this->own);
+	if (own != nullptr && own->type == VEH_SHIP && !own->vehstatus.Test(VehState::Hidden) && DistanceManhattan(own->tile, tile) <= 1 &&
+			(own->tile == tile || (IsTileType(own->tile, MP_WATER) && IsLock(own->tile) && GetLockPart(own->tile) != LockPart::Middle))) {
+		/* The eye eases up and down; the water goes with it. */
+		return this->cam.pos.z - CAB_VIEW_3D_SHIP_EYE;
+	}
+	for (const Vehicle *v : VehiclesOnTile(tile)) {
+		if (v->type == VEH_SHIP) return GetCabView3DShipWaterZ(v);
+	}
+	return static_cast<float>(lower - CAB_VIEW_3D_WATER_DROP);
+}
+
+/**
+ * Add the middle of a lock: stone walls along its sides, from the water up to above the land at its upper end, a
+ * stone sill and closed gates at the upper end while the water in the chamber is below the water above it, and closed
+ * gates at the lower end while it is above the water below it. Its ground is flat, at the height of the water.
+ * @param tile The middle of the lock.
+ * @param land_z Height of the corners of the land of the tile, sloping up along the lock.
+ * @param water Height of the water in the chamber.
+ */
+void Renderer::AddLock(TileIndex tile, const std::array<float, CORNER_END> &land_z, float water)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	const float lower = *std::ranges::min_element(land_z);
+	const float upper = *std::ranges::max_element(land_z);
+	const float bottom = lower - CAB_VIEW_3D_WATER_DROP;
+	const float top_water = upper - CAB_VIEW_3D_WATER_DROP;
+	/* The upper end is where both corners are high. */
+	const Axis axis = (land_z[CORNER_N] == land_z[CORNER_E] || land_z[CORNER_W] == land_z[CORNER_S]) ? AXIS_X : AXIS_Y;
+	const bool up_at_start = axis == AXIS_X ? land_z[CORNER_N] > land_z[CORNER_W] : land_z[CORNER_N] > land_z[CORNER_E];
+
+	/* Boxes in coordinates along and across the lock. */
+	auto box = [&](float a0, float a1, float c0, float c1, float z0, float z1, const RGB &colour) {
+		if (z1 <= z0) return;
+		if (axis == AXIS_X) {
+			this->AddFlatBox({x0 + a0, y0 + c0, z0}, {x0 + a1, y0 + c1, z1}, colour);
+		} else {
+			this->AddFlatBox({x0 + c0, y0 + a0, z0}, {x0 + c1, y0 + a1, z1}, colour);
+		}
+	};
+	box(0, TILE, 0, LOCK_WALL, bottom, upper + LOCK_WALL_TOP, LOCK_COLOUR);
+	box(0, TILE, TILE - LOCK_WALL, TILE, bottom, upper + LOCK_WALL_TOP, LOCK_COLOUR);
+
+	const float up_a = up_at_start ? 0 : TILE - LOCK_GATE;
+	const float down_a = up_at_start ? TILE - LOCK_GATE : 0;
+	/* Closed gates: two wooden leaves meeting in the middle, with a walkway on top. */
+	auto gates = [&](float a, float z0, float z1) {
+		const float mid = TILE / 2;
+		box(a, a + LOCK_GATE, LOCK_WALL, mid - LOCK_GATE_GAP, z0, z1, LOCK_GATE_COLOUR);
+		box(a, a + LOCK_GATE, mid + LOCK_GATE_GAP, TILE - LOCK_WALL, z0, z1, LOCK_GATE_COLOUR);
+		box(a, a + LOCK_GATE, mid - LOCK_GATE_GAP, mid + LOCK_GATE_GAP, z0, z1, LOCK_GATE_GAP_COLOUR);
+		box(a - LOCK_WALKWAY, a + LOCK_GATE + LOCK_WALKWAY, LOCK_WALL, TILE - LOCK_WALL, z1, z1 + LOCK_WALKWAY, LOCK_COLOUR);
+	};
+	if (water < top_water - 0.25f) {
+		/* The sill under the upper gates, and the gates holding back the water above. */
+		box(up_a, up_a + LOCK_GATE, LOCK_WALL, TILE - LOCK_WALL, bottom, std::max(water, bottom + 0.1f), LOCK_COLOUR);
+		gates(up_a, std::max(water, bottom + 0.1f), top_water + 1);
+	} else {
+		box(up_a, up_a + LOCK_GATE, LOCK_WALL, TILE - LOCK_WALL, bottom, top_water - 0.2f, LOCK_COLOUR);
+	}
+	if (water > bottom + 0.25f) {
+		/* The lower gates, holding back the water in the chamber. */
+		gates(down_a, bottom - 0.5f, water + 1);
+	}
+}
+
+/**
+ * Add banks along the sides of water lying below the land, see #CAB_VIEW_3D_WATER_DROP: from the
+ * water up to the land next to it, where that is not water or shore too.
+ * @param tile The tile with the water, or the shore.
+ * @param land_z Height of the corners of the land of the tile.
+ * @param water_z Height of the corners of the tile as drawn: below the land where there is water.
+ */
+void Renderer::AddBanks(TileIndex tile, const std::array<float, CORNER_END> &land_z, const std::array<float, CORNER_END> &water_z)
+{
+	static const std::array<std::pair<Corner, Corner>, DIAGDIR_END> edges = {{{CORNER_N, CORNER_E}, {CORNER_E, CORNER_S}, {CORNER_S, CORNER_W}, {CORNER_W, CORNER_N}}};
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	for (DiagDirection dir = DIAGDIR_BEGIN; dir < DIAGDIR_END; dir++) {
+		TileIndex next = AddTileIndexDiffCWrap(tile, TileIndexDiffCByDiagDir(dir));
+		if (IsValidTile(next) && (IsLoweredWater(next) || IsLockMiddle(next) || (IsTileType(next, MP_WATER) && IsCoastTile(next)))) continue;
+		auto [a, b] = edges[dir];
+		if (water_z[a] == land_z[a] && water_z[b] == land_z[b]) continue;
+		const float xa = x0 + CornerOffset(a).x, ya = y0 + CornerOffset(a).y;
+		const float xb = x0 + CornerOffset(b).x, yb = y0 + CornerOffset(b).y;
+		this->AddFlatQuad({Vec3{xa, ya, land_z[a]}, Vec3{xb, yb, land_z[b]}, Vec3{xb, yb, water_z[b]}, Vec3{xa, ya, water_z[a]}}, BANK_COLOUR, 1.0f);
 	}
 }
 
@@ -1665,6 +1836,28 @@ static std::optional<int> TopRow(const GroundTexture &tex)
 		if (pic.alpha[i] >= 0.5f) return static_cast<int>(i / pic.width) + tex.top;
 	}
 	return std::nullopt;
+}
+
+/**
+ * Get where the opaque pixels of a texture are.
+ * @param tex The texture.
+ * @return Screen columns of the left and right edge and rows of the top and bottom edge, relative to where the sprite is drawn.
+ */
+static std::array<float, 4> OpaqueBounds(const GroundTexture &tex)
+{
+	const Picture &pic = tex.levels[0];
+	int left = pic.width, right = 0, top = pic.height, bottom = 0;
+	for (int y = 0; y < pic.height; y++) {
+		for (int x = 0; x < pic.width; x++) {
+			if (!pic.alpha.empty() && pic.alpha[static_cast<size_t>(y) * pic.width + x] < 0.5f) continue;
+			left = std::min(left, x);
+			right = std::max(right, x + 1);
+			top = std::min(top, y);
+			bottom = std::max(bottom, y + 1);
+		}
+	}
+	if (right <= left) return {0, 0, 0, 0};
+	return {static_cast<float>(tex.left + left), static_cast<float>(tex.left + right), static_cast<float>(tex.top + top), static_cast<float>(tex.top + bottom)};
 }
 
 /**
@@ -3257,7 +3450,7 @@ void Renderer::AddTunnelInside(TileIndex tile, int z)
 void Renderer::AddVehicles(VehicleID own)
 {
 	for (const Vehicle *v : Vehicle::Iterate()) {
-		if (v->type != VEH_TRAIN && v->type != VEH_ROAD && v->type != VEH_AIRCRAFT) continue;
+		if (v->type != VEH_TRAIN && v->type != VEH_ROAD && v->type != VEH_SHIP && v->type != VEH_AIRCRAFT) continue;
 		if (v->vehstatus.Test(VehState::Hidden) || v->index == own) continue;
 		float dx = v->x_pos - this->cam.pos.x;
 		float dy = v->y_pos - this->cam.pos.y;
@@ -3267,6 +3460,10 @@ void Renderer::AddVehicles(VehicleID own)
 		if (v->type == VEH_AIRCRAFT) {
 			/* Shadows and rotors are vehicles of their own. */
 			if (Aircraft::From(v)->IsNormalAircraft()) this->AddAircraft(Aircraft::From(v));
+			continue;
+		}
+		if (v->type == VEH_SHIP) {
+			this->AddShip(Ship::From(v));
 			continue;
 		}
 
@@ -3310,25 +3507,63 @@ void Renderer::AddVehicles(VehicleID own)
 }
 
 /**
+ * Get the direction of the sprite of a vehicle that shows it from the side the camera sees it from.
+ * @param dir The direction the vehicle goes in.
+ * @return The direction of the sprite.
+ */
+Direction Renderer::GetShownDirection(Direction dir) const
+{
+	/* The map shows a vehicle going in a direction as seen from the south, looking north. Turn that view to the camera. */
+	auto heading = [](Direction d) { return std::atan2(HEADINGS[d].second, HEADINGS[d].first); };
+	float camera_yaw = std::atan2(this->cam.fwd.y, this->cam.fwd.x);
+	float wanted = heading(dir) - camera_yaw + heading(DIR_N);
+	Direction shown = DIR_N;
+	float best = 4.0f;
+	for (Direction d = DIR_BEGIN; d < DIR_END; d++) {
+		float off = std::abs(std::remainder(heading(d) - wanted, 2.0f * static_cast<float>(M_PI)));
+		if (off < best) {
+			best = off;
+			shown = d;
+		}
+	}
+	return shown;
+}
+
+/**
+ * Add a ship as a cut-out facing the camera, floating on the water, see #GetCabView3DShipWaterZ.
+ * It shows the sprite of the ship seen from the side the camera sees it from.
+ * @param v The ship.
+ */
+void Renderer::AddShip(const Ship *v)
+{
+	/* On the map ships show how they are turned, which can lag behind the direction they are going in. */
+	VehicleSpriteSeq seq;
+	v->GetImage(this->GetShownDirection(v->rotation), EIT_IN_DETAILS, &seq);
+	if (!seq.IsValid()) return;
+	PaletteID pal = seq.seq[0].pal != 0 ? seq.seq[0].pal : GetVehiclePalette(v);
+	const GroundTexture &tex = this->GetBoxTexture(seq.seq[0].sprite, pal, false);
+	/* The game draws the sprites of ships well away from their position; stand the middle of the hull on the position.
+	 * The sprite is 2 (length + width) wide, and the hull (length + width) / 2 high; its nearer half sinks into the water. */
+	auto [left, right, top, bottom] = OpaqueBounds(tex);
+	if (right <= left) return;
+	Vec3 at = {static_cast<float>(v->x_pos), static_cast<float>(v->y_pos), GetCabView3DShipWaterZ(v)};
+	/* The map looks down at 30 degrees, so the length of a ship going away from it or towards it shows upwards in the
+	 * sprite. Seen from the water, that has to shrink, or a ship seen from behind stands up like a wall. */
+	auto [hx, hy] = HEADINGS[v->rotation];
+	Vec3 d = at - this->cam.pos;
+	float side = std::abs(hx * d.y - hy * d.x) / std::max(std::hypot(hx, hy) * std::hypot(d.x, d.y), 1.0f);
+	float vertical = SHIP_UNITS * (SHIP_MIN_UPRIGHT + (1 - SHIP_MIN_UPRIGHT) * side);
+	this->AddCutout(tex, at, (left + right) / 2, bottom - (right - left) / 8, SHIP_UNITS, vertical);
+}
+
+/**
  * Add an aircraft as a cut-out facing the camera, at the height it flies in the game.
  * It shows the sprite of the aircraft seen from the side the camera sees it from.
  * @param v The aircraft.
  */
 void Renderer::AddAircraft(const Aircraft *v)
 {
-	/* The map shows a vehicle going in a direction as seen from the south, looking north. Turn that view to the camera. */
-	auto heading = [](Direction dir) { return std::atan2(HEADINGS[dir].second, HEADINGS[dir].first); };
-	float camera_yaw = std::atan2(this->cam.fwd.y, this->cam.fwd.x);
-	float wanted = heading(v->direction) - camera_yaw + heading(DIR_N);
-	Direction shown = DIR_N;
-	float best = 4.0f;
-	for (Direction dir = DIR_BEGIN; dir < DIR_END; dir++) {
-		float off = std::abs(std::remainder(heading(dir) - wanted, 2.0f * static_cast<float>(M_PI)));
-		if (off < best) {
-			best = off;
-			shown = dir;
-		}
-	}
+	Direction shown = this->GetShownDirection(v->direction);
 
 	VehicleSpriteSeq seq;
 	v->GetImage(shown, EIT_ON_MAP, &seq);
@@ -3832,6 +4067,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	this->tunnels.clear();
 	/* Inside a tunnel its vault is nearest, and hides the hill around it. */
 	if (IsValidTile(camera.tunnel) && IsTunnelTile(camera.tunnel)) this->AddTunnelInside(camera.tunnel, std::get<int>(GetTilePixelSlope(camera.tunnel)));
+	this->own = camera.vehicle;
 	for (const auto &[dist, tile] : visible) this->AddTile(tile, dist);
 	this->AddVehicles(camera.vehicle);
 
@@ -3923,4 +4159,16 @@ float GetCabView3DFrameTime(float scale)
 void ResetCabView3D()
 {
 	_renderer.Reset();
+}
+
+/**
+ * Height of the surface of the water a ship sails on, as the 3D view shows it.
+ * @param v The ship.
+ * @return The height, in world coordinates.
+ */
+float GetCabView3DShipWaterZ(const Vehicle *v)
+{
+	/* On aqueducts, the water is as high as the deck. */
+	if (IsTileType(v->tile, MP_TUNNELBRIDGE)) return static_cast<float>(v->z_pos);
+	return static_cast<float>(v->z_pos - CAB_VIEW_3D_WATER_DROP);
 }

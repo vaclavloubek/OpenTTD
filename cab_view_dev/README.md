@@ -211,6 +211,34 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   přejezd. Spustit jako `CabTestAI` (zkopírovat do `ai/`, v `game_start.scr` `start_ai CabRoadAI`), nejlépe s
   `larger_towns = 1` a `initial_city_size = 4` v `[economy]`, aby bylo velké město. Do logu píše `BUS <číslo>`.
 
+### 3D pohled z lodi
+
+- Tlačítko **3D** funguje i u lodí. Oko je na přídi můstku (3 jednotky před středem lodi), 4 jednotky nad vodou.
+  Směr pohledu se řídí tím, jak je loď otočená (`rotation`): loď se ve hře otáčí na místě po 45° každých 8 tiků
+  a pohled se s ní dotáčí, i když stojí.
+- **Voda leží o jednotku níž než země** (`CAB_VIEW_3D_WATER_DROP`): kanály, řeky (i na svahu), moře, depa, konce
+  plavebních komor, bójky, vodní část přístavů a ropné plošiny. Kde voda sousedí se zemí, je svislý břeh
+  (`AddBanks`); hrany kanálů a řek namalované ve spritu vody se vynechávají, ve 3D ležely jako proužek na hladině.
+  Pláže (pobřežní svahy) se rohy u vody svažují pod hladinu, takže moře nemá před pláží schod. Věci na vodě
+  (bójky, depa) jsou posunuté s ní. Akvadukty mají vodu ve výšce mostovky jako dřív.
+- **Plavební komory** (`AddLock`): prostřední díl je komora s kamennými zdmi po stranách (od dna až nad horní
+  břeh), dole kamenný práh a nahoře vrata (dvě dřevěná křídla s lávkou), dokud je voda v komoře níž než nad ní,
+  a dolní vrata, když je výš než pod ní. Hladina v komoře je ve výšce lodi, která v ní je (loď ve hře stoupá
+  o jednotku každých 8 tiků; u vlastní lodi jde hladina s plynule stoupajícím okem, i když loď teprve vplouvá
+  z dolního nebo horního dílu), jinak dole. Sprity zdí komory hra kreslí v tenkých boxech, ty se nepoužijí.
+- **Ostatní lodě** jsou výřezy otočené ke kameře se spritem z té strany, ze které je kamera vidí (jako letadla),
+  0,4 jednotky na pixel. Hra kreslí sprity lodí daleko od jejich polohy (u lodi na jihozápad o ~15 jednotek
+  vpřed), proto se výřez staví podle neprůhledné části spritu: střed trupu na polohu lodi, bližší půlka trupu
+  pod hladinu. Délka lodi plující od kamery nebo ke kameře je ve spritu nahoru, proto se výřez svisle zmenšuje
+  až na 0,4×. Jako kvádr potažený spritem (jako vlaky) vypadala loď jako plochá deska.
+- Testovací AI teď staví kanál 2 dlaždice široký a 28 dlouhý: uprostřed stoupá o úroveň dvěma plavebními komorami
+  vedle sebe, přes dolní část vede silniční most, přes horní železniční, u komor je přístav, po březích stromy.
+  Dvě lodě (trajekty, ne vznášedla, ta jsou nízká) plují proti sobě z dep na obou koncích mezi dvěma bójkami.
+  Na mapě s mořem (`terrain_type = 2`, `quantity_sea_lakes = 3`) postaví ještě dva přístavy na pobřeží
+  a vznášedlo mezi nimi (`SEASHIP` v logu).
+- Uložené hry na zkoušku: `kabina3d_lod.sav` (kanál s komorami, lodě #1 a #2 společnosti „Cab Test Rail“)
+  a `kabina3d_more.sav` (moře, loď #1).
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt

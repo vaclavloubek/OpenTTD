@@ -16,6 +16,7 @@
 #include "train.h"
 #include "roadveh.h"
 #include "road_map.h"
+#include "ship.h"
 #include "landscape.h"
 #include "bridge_map.h"
 #include "rail_map.h"
@@ -45,7 +46,7 @@
 
 /** Whether cab views look ahead in the direction of travel. Shared by all cab views. */
 static bool _cab_view_look_ahead = true;
-/** Whether cab views of trains, road vehicles and aircraft show the 3D view instead of the map. Shared by all cab views. */
+/** Whether cab views of trains, road vehicles, ships and aircraft show the 3D view instead of the map. Shared by all cab views. */
 static bool _cab_view_3d = false;
 
 /** Time constant (in milliseconds) of the camera easing towards its look-ahead position. */
@@ -90,6 +91,10 @@ static constexpr float CAB_VIEW_3D_AIRCRAFT_MAX_LOOK_DOWN = 0.5f;
 static constexpr float CAB_VIEW_3D_AIRCRAFT_MAX_TILT = 0.2f;
 /** Distance (in world coordinates) over which the height of the ground below an aircraft is followed, so hills below don't make the view nod. */
 static constexpr float CAB_VIEW_3D_AIRCRAFT_GROUND_DIST = 2.0f * TILE_SIZE;
+/** How far (in world coordinates) in front of its position the eye of the 3D view from a ship is, at the front of its bridge. */
+static constexpr float CAB_VIEW_3D_SHIP_AHEAD = 3.0f;
+/** Distance (in world coordinates) a ship turning on the spot or rising in a lock counts as moving each game tick, so the view follows it. */
+static constexpr float CAB_VIEW_3D_SHIP_STILL_STEP = 0.2f;
 /**
  * Part of the time between two redraws of the screen that making a picture of the 3D view may take.
  * When it takes longer, the picture is made smaller, and when even that is not enough, the view is drawn
@@ -181,11 +186,11 @@ private:
 	/**
 	 * Whether there is a 3D view from a vehicle.
 	 * @param v The vehicle.
-	 * @return True for trains, road vehicles and aircraft.
+	 * @return True for trains, road vehicles, ships and aircraft.
 	 */
 	static bool Has3DView(const Vehicle *v)
 	{
-		return v->type == VEH_TRAIN || v->type == VEH_ROAD || v->type == VEH_AIRCRAFT;
+		return v->type == VEH_TRAIN || v->type == VEH_ROAD || v->type == VEH_SHIP || v->type == VEH_AIRCRAFT;
 	}
 
 	/** Whether this window shows the 3D view. */
@@ -278,6 +283,29 @@ private:
 	}
 
 	/**
+	 * Place the camera of the 3D view of a ship at the front of its bridge, above the water, see #GetCabView3DShipWaterZ.
+	 * The height eases, so the view rises and sinks smoothly in locks, where the ship goes up a unit every 8 game ticks.
+	 * @param v The ship.
+	 * @param camera The camera, with its direction already set.
+	 * @param x X position of the middle of the ship.
+	 * @param y Y position of the middle of the ship.
+	 * @param moved Distance the ship moved since the last game tick.
+	 * @param jump Place the camera at once, without easing.
+	 */
+	void PlaceShipCamera(const Vehicle *v, CabViewCamera &camera, float x, float y, float moved, bool jump)
+	{
+		camera.x = x + std::cos(this->yaw) * CAB_VIEW_3D_SHIP_AHEAD;
+		camera.y = y + std::sin(this->yaw) * CAB_VIEW_3D_SHIP_AHEAD;
+		float z = GetCabView3DShipWaterZ(v);
+		if (jump) {
+			this->height = z;
+		} else {
+			this->height += (z - this->height) * (1.0f - std::exp(-std::max(moved, CAB_VIEW_3D_SHIP_STILL_STEP) / CAB_VIEW_3D_CLIMB_DIST));
+		}
+		camera.z = this->height + CAB_VIEW_3D_SHIP_EYE;
+	}
+
+	/**
 	 * Place the camera of the 3D view of an aircraft at its windows, at the height it flies in the game.
 	 * The higher it flies, the more the view looks down at the ground; climbing and descending tilt it a bit.
 	 * @param v The aircraft.
@@ -308,7 +336,7 @@ private:
 	}
 
 	/**
-	 * Place the camera of the 3D view for the current game tick: in the cab of the train, road vehicle or aircraft.
+	 * Place the camera of the 3D view for the current game tick: in the cab of the train, road vehicle, ship or aircraft.
 	 * The direction and height ease with the distance travelled instead of with time, so
 	 * the view follows the track through curves and over slopes at any speed.
 	 * @param jump Place the camera at once, without easing or moving smoothly from where it was.
@@ -321,7 +349,9 @@ private:
 		this->train_x = x;
 		this->train_y = y;
 
-		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
+		/* Ships turn on the spot to a new direction bit by bit; the view follows how the ship is turned. */
+		const bool ship = v->type == VEH_SHIP;
+		TileIndexDiffC diff = TileIndexDiffCByDir(ship ? Ship::From(v)->rotation : v->direction);
 		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
 		/* Roads run along the axes of the tiles; a road vehicle facing north, east, south or west is halfway through
 		 * a turn. Look along the road it turns into, as a driver does, instead of at the corner of the block. */
@@ -342,7 +372,8 @@ private:
 		if (jump) {
 			this->yaw = target;
 		} else {
-			this->yaw += turn * (1.0f - std::exp(-moved / (v->type == VEH_ROAD ? CAB_VIEW_3D_ROAD_TURN_DIST : CAB_VIEW_3D_TURN_DIST)));
+			float turned = ship ? std::max(moved, 4 * CAB_VIEW_3D_SHIP_STILL_STEP) : moved;
+			this->yaw += turn * (1.0f - std::exp(-turned / (v->type == VEH_ROAD ? CAB_VIEW_3D_ROAD_TURN_DIST : CAB_VIEW_3D_TURN_DIST)));
 		}
 
 		CabViewCamera camera;
@@ -354,6 +385,8 @@ private:
 			camera.x = x;
 			camera.y = y;
 			this->PlaceAircraftCamera(v, camera, moved, jump);
+		} else if (ship) {
+			this->PlaceShipCamera(v, camera, x, y, moved, jump);
 		} else {
 			this->PlaceGroundCamera(v, camera, x, y, moved, jump);
 		}
