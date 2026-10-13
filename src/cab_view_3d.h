@@ -5,13 +5,14 @@
  * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file cab_view_3d.h Software rendered 3D view from the cab of a train. */
+/** @file cab_view_3d.h Software rendered 3D view from the cab of a train or an aircraft. */
 
 #ifndef CAB_VIEW_3D_H
 #define CAB_VIEW_3D_H
 
 #include "core/geometry_type.hpp"
 #include "tile_type.h"
+#include "vehicle_type.h"
 
 /** Smallest size of the picture of the 3D view compared to the view, when drawing at full size takes too long. */
 constexpr float CAB_VIEW_3D_MIN_SCALE = 0.5f;
@@ -23,6 +24,8 @@ struct CabViewCamera {
 	float z = 0; ///< Height of the eye, in world coordinates.
 	float yaw = 0; ///< Direction of view in radians; 0 looks towards +x, pi/2 towards +y.
 	float pitch = 0; ///< Tilt of the view in radians, upwards positive, on top of the slight look down of the 3D view.
+	float altitude = 0; ///< How high above the ground an aircraft flies; the haze then starts further away, as the ground is seen from above.
+	VehicleID vehicle = VehicleID::Invalid(); ///< The vehicle the camera rides on, which is not drawn.
 	bool dark = false; ///< Nothing to see, e.g. in a depot.
 	TileIndex tunnel = INVALID_TILE; ///< An entrance of the tunnel the train is in, whose inside the view shows.
 

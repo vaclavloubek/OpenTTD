@@ -4614,7 +4614,7 @@ STR_CAB_VIEW_CAPTION                                            :{WHITE}Kabina: 
 STR_CAB_VIEW_LOOK_AHEAD                                         :{BLACK}Výhled vpřed
 STR_CAB_VIEW_LOOK_AHEAD_TOOLTIP                                 :{BLACK}Přepnout mezi výhledem dopředu ve směru jízdy a vozidlem uprostřed pohledu
 STR_CAB_VIEW_3D                                                 :{BLACK}3D
-STR_CAB_VIEW_3D_TOOLTIP                                         :{BLACK}Přepnout mezi pohledem na mapu a 3D pohledem ze střechy vlaku podél trati
+STR_CAB_VIEW_3D_TOOLTIP                                         :{BLACK}Přepnout mezi pohledem na mapu a 3D pohledem z kabiny vlaku nebo letadla
 STR_CAB_VIEW_START                                              :{BLACK}Rozjet
 STR_CAB_VIEW_STOP                                               :{BLACK}Zastavit
 STR_CAB_VIEW_START_STOP_TOOLTIP                                 :{BLACK}Rozjet nebo zastavit vozidlo

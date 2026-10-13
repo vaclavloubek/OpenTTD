@@ -33,7 +33,7 @@ def key(name, mods=()):
     d.sync(); time.sleep(0.05)
 
 def type_text(s):
-    special = {' ': 'space', '_': 'underscore', '-': 'minus', '.': 'period', '/': 'slash', ',': 'comma', '0':'0'}
+    special = {'=': 'equal', ' ': 'space', '_': 'underscore', '-': 'minus', '.': 'period', '/': 'slash', ',': 'comma', '0':'0'}
     for ch in s:
         if ch.isupper():
             key(ch, mods=('Shift_L',))
