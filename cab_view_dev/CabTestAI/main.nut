@@ -255,6 +255,33 @@ function CabTestAI::Start()
 		AILog.Info("TUNNEL " + AIMap.GetTileIndex(x1, y0 + 4) + " to " + AIMap.GetTileX(end) + "," + AIMap.GetTileY(end));
 	}
 	this.BuildRailBridge(AIMap.GetTileIndex(x1, y0 + 12), AIMap.GetTileIndex(x1, y0 + 15), 3);
+
+	/* A road bridge over the line along X, where there is room for it. */
+	local road_bridge = false;
+	foreach (x in [x0 + 6, x0 + 5, x0 + 7, x0 + 9]) {
+		foreach (ends in [[y0 - 2, y0 + 2], [y0 - 1, y0 + 1], [y0 - 1, y0 + 2], [y0 - 2, y0 + 1]]) {
+			local a = AIMap.GetTileIndex(x, ends[0]);
+			local b = AIMap.GetTileIndex(x, ends[1]);
+			local types = AIBridgeList_Length(ends[1] - ends[0] + 1);
+			if (road_bridge || types.IsEmpty()) continue;
+			road_bridge = AIBridge.BuildBridge(AIVehicle.VT_ROAD, types.Begin(), a, b);
+			if (road_bridge) {
+				AILog.Info("ROAD BRIDGE " + x + "," + ends[0] + "-" + ends[1] + " " + AIBridge.GetName(types.Begin(), AIVehicle.VT_ROAD));
+				AIRoad.BuildRoad(AIMap.GetTileIndex(x, ends[0] - 2), a);
+				AIRoad.BuildRoad(b, AIMap.GetTileIndex(x, ends[1] + 2));
+			}
+		}
+	}
+	if (!road_bridge) AILog.Error("FAILED road bridge: " + AIError.GetLastErrorString());
+
+	/* An aqueduct over the line along Y, between valley sides raised from level ground for its ends. */
+	AITile.LevelTiles(AIMap.GetTileIndex(x1, y0 + 1), AIMap.GetTileIndex(x1 - 5, y0 + 4));
+	AITile.LevelTiles(AIMap.GetTileIndex(x1 + 1, y0 + 1), AIMap.GetTileIndex(x1 + 6, y0 + 4));
+	this.RaiseCorners(x1 - 4, y0 + 2, x1 - 2, y0 + 3);
+	this.RaiseCorners(x1 + 3, y0 + 2, x1 + 5, y0 + 3);
+	if (this.Must(AIBridge.BuildBridge(AIVehicle.VT_WATER, 0, AIMap.GetTileIndex(x1 - 2, y0 + 2), AIMap.GetTileIndex(x1 + 2, y0 + 2)), "aqueduct")) {
+		AILog.Info("AQUEDUCT " + (x1 - 2) + "," + (y0 + 2));
+	}
 	this.Must(AIRail.BuildRailStation(tB, AIRail.RAILTRACK_NW_SE, 1, 4, AIStation.STATION_NEW), "station B");
 	this.Must(AIRail.BuildRailDepot(tDepot, tA), "depot");
 

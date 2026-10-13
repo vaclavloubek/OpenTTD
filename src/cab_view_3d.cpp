@@ -37,6 +37,7 @@
 #include "bridge_map.h"
 #include "tunnel_map.h"
 #include "tunnelbridge_map.h"
+#include "clear_map.h"
 #include "rail.h"
 #include "newgrf_railtype.h"
 #include "settings_type.h"
@@ -96,10 +97,20 @@ constexpr float CROSSING_POST_ALONG = 2.2f; ///< How far the posts of a level cr
 constexpr float CROSSING_POST_ACROSS = 1.6f; ///< How far the posts of a level crossing stand from the sides of the tile, next to the road.
 constexpr float DECK_DEPTH = 2.0f; ///< Thickness of the deck of a bridge, below the track.
 constexpr float PILLAR_SIZE = 2.4f; ///< Width of a pillar under a bridge.
+constexpr float AQUEDUCT_WALL = 1.2f; ///< Thickness of the walls along the water of an aqueduct.
+constexpr float AQUEDUCT_WALL_HEIGHT = 2.0f; ///< Height of the walls along the water of an aqueduct.
+constexpr float BRIDGE_HEADROOM = 1.5f; ///< How far below the deck of a bridge the eye stays when passing under it.
+constexpr float HEADROOM_SLOPE = 0.5f; ///< How much the eye is lowered per unit travelled towards a bridge it passes under.
 constexpr float BRIDGE_DECK_EDGE = 2.0f; ///< How far the edges of the deck of a bridge are from the sides of its tiles.
 constexpr float RAMP_EDGE = 2.5f; ///< How far the edges of the deck of a bridge ramp are from the sides of its tile.
 constexpr float BRIDGE_SIDE_PLANE = 13.5f; ///< Where the near side of a bridge stands across its tiles when its sprite does not tell.
-constexpr float BRIDGE_SIDE_BOOST = 1.25f; ///< How much more opaque the sides of bridges are made, see #Renderer::GetBridgeSideTexture.
+constexpr float BRIDGE_SIDE_BOOST = 1.25f; ///< How much more opaque the sides of bridges and fences are made, see #Renderer::GetSideTexture.
+constexpr float FENCE_INSET = 0.6f; ///< How far fences stand inside the sides of their tiles, so those of two tiles on the same side don't overlap.
+constexpr float FENCE_DIST = 12.0f * TILE; ///< Fences along railways are drawn up to this distance; further away, their posts get thinner than a pixel.
+constexpr float FENCE_HEIGHT = 3.0f; ///< Height of the fences along railways.
+constexpr float FENCE_POST_SPACING = 4.0f; ///< Distance between the posts of fences along railways.
+constexpr float FENCE_POST_SIZE = 0.3f; ///< Width of a post of a fence along a railway.
+constexpr float FENCE_RAIL_SIZE = 0.25f; ///< Height of a rail of a fence along a railway.
 constexpr float PORTAL_HEIGHT = 11.0f; ///< Height of the face of a tunnel portal; its top stands above the hill.
 constexpr float PORTAL_OPENING = 4.5f; ///< Half the width of the opening of a tunnel portal, and the radius of its arch.
 constexpr float PORTAL_SPRING = 5.0f; ///< Height where the arch of a tunnel portal starts.
@@ -152,6 +163,7 @@ constexpr RGB PORTAL_COLOUR = {124, 114, 100}; ///< Colour of the stone face of 
 constexpr RGB PORTAL_RING_COLOUR = {170, 158, 140}; ///< Colour of the ring of stones around the opening of a tunnel portal.
 constexpr RGB TUNNEL_WALL_COLOUR = {44, 40, 36}; ///< Colour of the walls just inside a tunnel.
 constexpr RGB TUNNEL_DARK = {6, 6, 6}; ///< Colour of the darkness inside a tunnel.
+constexpr RGB AQUEDUCT_COLOUR = {178, 174, 166}; ///< Colour of the stone of aqueducts.
 
 /** A vector in world coordinates. */
 struct Vec3 {
@@ -403,6 +415,14 @@ struct BuildingShape {
 	float foot_row = 0; ///< Row of the sprite at the foot of the cut-out, relative to where the sprite is drawn.
 };
 
+/** Where a fence stands in its sprite, see #FitFence. */
+struct FenceFit {
+	float line; ///< Where the bottom of the fence is, relative to where the sprite is drawn, see #FitFence.
+	float height; ///< Height of the fence, in rows of the sprite.
+	float left; ///< Column of the left side of the fence, relative to where the sprite is drawn.
+	float right; ///< Column of the right side of the fence, relative to where the sprite is drawn.
+};
+
 /**
  * Whether a sprite is the building of the default rail stations.
  * @param image The sprite.
@@ -478,6 +498,7 @@ public:
 		this->textures.clear();
 		this->box_textures.clear();
 		this->building_shapes.clear();
+		this->fence_fits.clear();
 		this->frame = {};
 		this->depth = {};
 		this->frame_valid = false;
@@ -503,6 +524,7 @@ private:
 	std::unordered_map<std::vector<int32_t>, GroundTexture, TextureKeyHash> textures; ///< Ground textures put together so far.
 	std::unordered_map<uint64_t, GroundTexture> box_textures; ///< Textures of sprites standing in boxes, by sprite and palette.
 	std::map<std::tuple<SpriteID, PaletteID, int, int, int, int, int, bool>, BuildingShape> building_shapes; ///< Shapes of buildings worked out so far, see #GetBuildingShape.
+	std::map<std::tuple<SpriteID, PaletteID, int, int>, std::optional<FenceFit>> fence_fits; ///< Where fences stand in their sprites, see #GetFenceFit.
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
 	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
@@ -511,7 +533,7 @@ private:
 	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
 	const GroundTexture &GetBoxTexture(SpriteID image, PaletteID pal, bool widen = true);
 	const GroundTexture &GetCompositeTexture(std::span<const BoxSpriteToDraw *const> boxes, Point origin);
-	const GroundTexture &GetBridgeSideTexture(SpriteID image, PaletteID pal, Axis axis);
+	const GroundTexture &GetSideTexture(SpriteID image, PaletteID pal, Axis axis, float climb = 0, bool detail = false);
 	RGB Fog(const RGB &colour, float dist) const;
 
 	std::vector<ScreenTriangle> triangles; ///< Triangles of the current picture, nearest first.
@@ -530,6 +552,7 @@ private:
 	void AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddBridgePillars(TileIndex tile, Axis axis, float along, std::pair<float, float> across, float under, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour);
 	void AddBridgeRamp(TileIndex tile, int ground_z, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddAqueductWalls(Axis axis, float a0, std::pair<float, float> across, std::pair<float, float> deck);
 	void AddTunnelPortal(TileIndex tile, int z);
 	void AddBox(const BoxSpriteToDraw &box, int ground_z, float height_scale);
 	const BuildingShape &GetBuildingShape(const BoxSpriteToDraw &box, bool station);
@@ -538,6 +561,11 @@ private:
 	void AddBillboard(const BoxSpriteToDraw &box);
 	bool AddSignal(TileIndex tile, const BoxSpriteToDraw &box);
 	void AddCrossing(TileIndex tile, int z);
+	const std::optional<FenceFit> &GetFenceFit(SpriteID image, PaletteID pal, Axis axis, float climb);
+	void AddFence(const BoxSpriteToDraw &box, TileIndex tile, Axis axis, float edge, const std::array<float, CORNER_END> &corner_z, bool split_we);
+	void AddPostFence(TileIndex tile, std::pair<float, float> from, std::pair<float, float> to, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour);
+	void AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we);
+	bool AddRailFence(TileIndex tile, const BoxSpriteToDraw &box, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddVehicles();
 	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
 	void AddTexturedFace(const GroundTexture &tex, float sx, float sy, std::span<const Vec3> world, std::span<const Vec3> shown, const Vec3 &normal, bool cutout);
@@ -1291,6 +1319,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	if (IsBridgeTile(tile)) this->AddBridgeRamp(tile, raw_z, corner_z, split_we, dist);
 	if (IsBridgeAbove(tile)) this->AddBridgeMiddle(tile, corner_z, split_we, dist);
 	if (boxes && IsLevelCrossingTile(tile)) this->AddCrossing(tile, z);
+	if (boxes && IsTileType(tile, MP_CLEAR)) this->AddFieldFences(tile, corner_z, split_we);
 	if (boxes) {
 		for (const BoxSpriteToDraw &box : this->box_sprites) {
 			if (box.bridge) continue;
@@ -1304,7 +1333,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					break;
 
 				case MP_CLEAR:
-					/* Fences around fields; their boxes are the whole tile. */
+					/* Fences around fields are drawn whole, see AddFieldFences. */
 					break;
 
 				case MP_HOUSE:
@@ -1328,6 +1357,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					[[fallthrough]];
 
 				case MP_RAILWAY:
+					if (!box.child && this->AddRailFence(tile, box, corner_z, split_we, dist)) break;
 					if (!box.child && this->AddSignal(tile, box)) break;
 					[[fallthrough]];
 
@@ -2278,6 +2308,254 @@ void Renderer::AddCrossing(TileIndex tile, int z)
 }
 
 /**
+ * Work out where a fence along an axis stands in its sprite, from its bottom, which stands on the ground. The isometric
+ * view draws a point of the fence at the row along + across - z, and at the column 2 * (across - along) for a fence
+ * along the x axis, 2 * (along - across) for one along the y axis. With the ground climbing along the fence, the line
+ * of the bottom of each column, its row plus or minus (1 - climb) times half its column, is then the same: it is
+ * (2 - climb) times across, less how high the ground is where the fence starts along the axis.
+ * @param tex The texture of the sprite, see #Renderer::GetBoxTexture.
+ * @param axis The direction of the fence.
+ * @param climb How much the ground rises per unit along the fence.
+ * @return Where the fence stands; nothing when the sprite has no pixels.
+ */
+static std::optional<FenceFit> FitFence(const GroundTexture &tex, Axis axis, float climb)
+{
+	const Picture &pic = tex.levels[0];
+	if (pic.alpha.empty()) return std::nullopt;
+	std::vector<float> lines;
+	float height = 0;
+	int left = pic.width;
+	int right = 0;
+	for (int x = 0; x < pic.width; x++) {
+		int top = -1;
+		int bottom = -1;
+		for (int y = 0; y < pic.height; y++) {
+			if (pic.alpha[static_cast<size_t>(y) * pic.width + x] < 0.5f) continue;
+			if (top < 0) top = y;
+			bottom = y;
+		}
+		if (top < 0) continue;
+		const float col = x + tex.left + 0.5f;
+		const float row = bottom + tex.top + 0.5f;
+		lines.push_back(row + (axis == AXIS_X ? 1.0f : -1.0f) * (1 - climb) * col / 2);
+		height = std::max(height, static_cast<float>(bottom - top + 1));
+		left = std::min(left, x);
+		right = std::max(right, x + 1);
+	}
+	if (lines.empty()) return std::nullopt;
+	/* Between its posts, the bottom of a fence may be a rail above the ground; its lowest parts stand on it. */
+	const size_t lowest = lines.size() * 9 / 10;
+	std::nth_element(lines.begin(), lines.begin() + lowest, lines.end());
+	return FenceFit{lines[lowest], height, static_cast<float>(left + tex.left), static_cast<float>(right + tex.left)};
+}
+
+/**
+ * Get where a fence stands in its sprite, see #FitFence.
+ * @param image The sprite of the fence.
+ * @param pal Its palette.
+ * @param axis The direction of the fence.
+ * @param climb How much the ground rises per unit along the fence.
+ * @return Where the fence stands; nothing when the sprite has no pixels.
+ */
+const std::optional<FenceFit> &Renderer::GetFenceFit(SpriteID image, PaletteID pal, Axis axis, float climb)
+{
+	const auto key = std::make_tuple(image & SPRITE_MASK, pal, static_cast<int>(axis), static_cast<int>(std::lround(climb * 16)));
+	auto it = this->fence_fits.find(key);
+	if (it == this->fence_fits.end()) it = this->fence_fits.emplace(key, FitFence(this->GetBoxTexture(image, pal, false), axis, climb)).first;
+	return it->second;
+}
+
+/**
+ * Add a fence along a side of a tile, like the hedges around fields and the fences along railways: an upright cut-out
+ * following the ground, dressed in its sprite and seen from both sides, with its height scaled like those of buildings.
+ * @param box The sprite of the fence.
+ * @param tile The tile.
+ * @param axis The direction of the fence.
+ * @param edge The side of the tile whose ground the sprite stands on, across the fence: 0 or #TILE.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ */
+void Renderer::AddFence(const BoxSpriteToDraw &box, TileIndex tile, Axis axis, float edge, const std::array<float, CORNER_END> &corner_z, bool split_we)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	/* Coordinates along and across the fence. */
+	const float a0 = axis == AXIS_X ? x0 : y0;
+	const float c0 = axis == AXIS_X ? y0 : x0;
+	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
+	/* Height of the ground at a point of the tile, relative to its north corner. */
+	auto ground = [&](float a, float c) { return axis == AXIS_X ? SurfaceZ(corner_z, split_we, a, c) : SurfaceZ(corner_z, split_we, c, a); };
+
+	const std::array<float, 2> base = {ground(0, edge), ground(TILE, edge)};
+	const float climb = (base[1] - base[0]) / TILE;
+	const std::optional<FenceFit> &fit = this->GetFenceFit(box.image, box.pal, axis, climb);
+	if (!fit.has_value()) return;
+	const float sx = static_cast<float>(box.x) / ZOOM_BASE;
+	const float sy = static_cast<float>(box.y) / ZOOM_BASE;
+	const float line = fit->line + sy + (axis == AXIS_X ? 1.0f : -1.0f) * (1 - climb) * sx / 2;
+	/* Where the sprite shows the fence across the tile, and where it stands in the 3D view. */
+	const float shown = (line + base[0] - climb * a0) / (2 - climb);
+	const float plane = std::clamp(shown, c0 + FENCE_INSET, c0 + TILE - FENCE_INSET);
+
+	/* Where the sprite shows the ends of the fence along the tile; a fence that ends a little short of the sides of the
+	 * tile is stretched to them, so the fences of tiles next to each other join. */
+	std::array<float, 2> ends;
+	if (axis == AXIS_X) {
+		/* Along the x axis, the columns go the other way. */
+		ends = {shown - (fit->right + sx) / 2, shown - (fit->left + sx) / 2};
+	} else {
+		ends = {shown + (fit->left + sx) / 2, shown + (fit->right + sx) / 2};
+	}
+	ends[0] = std::clamp(ends[0], a0, a0 + 2);
+	ends[1] = std::clamp(ends[1], a0 + TILE - 2, a0 + TILE);
+
+	/* The pixels at the bottom reach half a row below the ground. */
+	const float low = -0.5f;
+	const float high = fit->height;
+	const std::array<float, 2> foot = {ground(0, plane - c0), ground(TILE, plane - c0)};
+	const std::array<float, 2> pictured_base = {base[0] + climb * (ends[0] - a0), base[0] + climb * (ends[1] - a0)};
+	const std::array<Vec3, 4> world = {
+		point(a0, plane, foot[0] + low * BUILDING_HEIGHT), point(a0 + TILE, plane, foot[1] + low * BUILDING_HEIGHT),
+		point(a0 + TILE, plane, foot[1] + high * BUILDING_HEIGHT), point(a0, plane, foot[0] + high * BUILDING_HEIGHT),
+	};
+	const std::array<Vec3, 4> pictured = {
+		point(ends[0], shown, pictured_base[0] + low), point(ends[1], shown, pictured_base[1] + low),
+		point(ends[1], shown, pictured_base[1] + high), point(ends[0], shown, pictured_base[0] + high),
+	};
+	const GroundTexture &tex = this->GetSideTexture(box.image, box.pal, axis, climb, true);
+	const Vec3 normal = point(0, 1, 0);
+	this->AddTexturedFace(tex, sx, sy, world, pictured, normal, true);
+	this->AddTexturedFace(tex, sx, sy, world, pictured, normal * -1, true);
+}
+
+/**
+ * Add a fence of posts and rails, like those along railways, between two points of a tile, following its ground.
+ * @param tile The tile.
+ * @param from Where the fence starts, relative to the north corner of the tile.
+ * @param to Where the fence ends, relative to the north corner of the tile.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ * @param colour Colour of the rails; the posts are darker.
+ */
+void Renderer::AddPostFence(TileIndex tile, std::pair<float, float> from, std::pair<float, float> to, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	const float dx = to.first - from.first;
+	const float dy = to.second - from.second;
+	const int posts = std::max(1, static_cast<int>(std::lround(std::hypot(dx, dy) / FENCE_POST_SPACING)));
+	auto at = [&](float t) {
+		const float x = from.first + dx * t;
+		const float y = from.second + dy * t;
+		return Vec3{x0 + x, y0 + y, SurfaceZ(corner_z, split_we, x, y)};
+	};
+
+	/* The posts stand in the middle of equal parts of the fence, so those of fences next to each other are as far apart. */
+	std::vector<Vec3> points = {at(0)};
+	constexpr float HALF_POST = FENCE_POST_SIZE / 2;
+	for (int i = 0; i < posts; i++) {
+		const Vec3 p = at((i + 0.5f) / posts);
+		points.push_back(p);
+		this->AddFlatBox({p.x - HALF_POST, p.y - HALF_POST, p.z - 0.5f}, {p.x + HALF_POST, p.y + HALF_POST, p.z + FENCE_HEIGHT + HALF_POST}, colour * 0.7f);
+	}
+	points.push_back(at(1));
+
+	/* Two rails, along the top and lower down, bending with the ground at the posts. */
+	for (size_t i = 0; i + 1 < points.size(); i++) {
+		const Vec3 &a = points[i];
+		const Vec3 &b = points[i + 1];
+		for (float h : {FENCE_HEIGHT - FENCE_RAIL_SIZE, FENCE_HEIGHT * 0.35f}) {
+			const Vec3 lo = {0, 0, h};
+			const Vec3 hi = {0, 0, h + FENCE_RAIL_SIZE};
+			this->AddFlatQuad({a + lo, b + lo, b + hi, a + hi}, colour, 1.0f);
+		}
+	}
+}
+
+/**
+ * Add the fences around a field, like hedges and stone walls, see DrawClearLandFence.
+ * @param tile The tile.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ */
+void Renderer::AddFieldFences(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we)
+{
+	if (!IsClearGround(tile, CLEAR_FIELDS) || IsSnowTile(tile)) return;
+	/* The sides with a fence, in the order the game draws their sprites, with the side of the tile whose ground each sprite stands on. */
+	static const std::array<std::tuple<DiagDirection, Axis, float>, DIAGDIR_END> sides = {{
+		{DIAGDIR_NW, AXIS_X, 0.0f}, {DIAGDIR_NE, AXIS_Y, 0.0f}, {DIAGDIR_SW, AXIS_Y, TILE}, {DIAGDIR_SE, AXIS_X, TILE},
+	}};
+	auto box = this->box_sprites.begin();
+	for (const auto &[side, axis, edge] : sides) {
+		if (GetFence(tile, side) == 0) continue;
+		if (box == this->box_sprites.end() || box->bridge) return;
+		this->AddFence(*box, tile, axis, edge, corner_z, split_we);
+		++box;
+	}
+}
+
+/**
+ * Add a fence of a railway, where the viewport draws the sprite of one, see DrawTrackDetails.
+ * @param tile The tile.
+ * @param box The sprite and its box.
+ * @param corner_z Height of the corners of the ground of the tile.
+ * @param split_we How the ground of the tile is split into triangles, see #SurfaceZ.
+ * @param dist Distance of the tile from the camera.
+ * @return Whether the box is that of a fence; it is then drawn, when it is close enough.
+ */
+bool Renderer::AddRailFence(TileIndex tile, const BoxSpriteToDraw &box, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
+{
+	if (!IsPlainRailTile(tile)) return false;
+	switch (GetRailGroundType(tile)) {
+		case RailGroundType::FenceNW:
+		case RailGroundType::FenceSE:
+		case RailGroundType::FenceSENW:
+		case RailGroundType::FenceNE:
+		case RailGroundType::FenceSW:
+		case RailGroundType::FenceNESW:
+		case RailGroundType::FenceVert1:
+		case RailGroundType::FenceVert2:
+		case RailGroundType::FenceHoriz1:
+		case RailGroundType::FenceHoriz2:
+		case RailGroundType::HalfTileWater:
+			break;
+
+		default:
+			return false;
+	}
+
+	/* The boxes of the fences are thin, along a side of the tile, or a dot in its middle for those along a diagonal. */
+	constexpr int HALF = TILE_SIZE / 2;
+	const int x = box.xmin - static_cast<int>(TileX(tile) * TILE_SIZE);
+	const int y = box.ymin - static_cast<int>(TileY(tile) * TILE_SIZE);
+	std::pair<float, float> from, to;
+	if (box.ymin == box.ymax && box.xmax - box.xmin >= HALF) {
+		const float side = y < HALF ? FENCE_INSET : TILE - FENCE_INSET;
+		from = {0.0f, side};
+		to = {TILE, side};
+	} else if (box.xmin == box.xmax && box.ymax - box.ymin >= HALF) {
+		const float side = x < HALF ? FENCE_INSET : TILE - FENCE_INSET;
+		from = {side, 0.0f};
+		to = {side, TILE};
+	} else if (box.xmin == box.xmax && box.ymin == box.ymax && x == HALF && y == HALF) {
+		/* An upright sprite is a fence from the north corner to the south one, a flat one from the west corner to the east one. */
+		const Picture &pic = this->GetBoxTexture(box.image, box.pal, false).levels[0];
+		if (pic.height > pic.width) {
+			from = {0.0f, 0.0f};
+			to = {TILE, TILE};
+		} else {
+			from = {TILE, 0.0f};
+			to = {0.0f, TILE};
+		}
+	} else {
+		return false;
+	}
+	/* Its colour is that of the sprite. */
+	if (dist <= FENCE_DIST) this->AddPostFence(tile, from, to, corner_z, split_we, this->GetBoxTexture(box.image, box.pal, false).mean);
+	return true;
+}
+
+/**
  * Find where a side of a bridge stands across the bridge, from the bottom of its sprite, which stands on the deck.
  * @param tex The texture of the sprite of the side, see #Renderer::GetBoxTexture.
  * @param sx Screen column where the viewport draws the sprite, in normal zoom pixels.
@@ -2307,15 +2585,18 @@ static std::optional<float> FindBridgeSide(const GroundTexture &tex, float sx, f
 }
 
 /**
- * Get the texture of a side of a bridge, a cut-out of thin lines along the bridge and up. In the sprite, lines along
- * the bridge are steps of pixels, which would be teeth in 3D. The opacity is averaged along the bridge over a whole
- * step, which makes them straight, and raised a little, so lines a pixel thin stay.
+ * Get the texture of an upright side along an axis, like a side of a bridge or a fence: a cut-out of thin lines along
+ * it and up. In the sprite, lines along the side are steps of pixels, which would be teeth in 3D. The opacity is
+ * averaged along the side over a whole step, which makes them straight, and raised a little, so lines a pixel thin stay.
  * @param image The sprite of the side.
  * @param pal Its palette.
- * @param axis The axis of the bridge.
+ * @param axis The direction of the side.
+ * @param climb How much the side rises per unit along the axis, like a fence on a slope.
+ * @param detail Whether the colours of the opaque pixels of the sprite stay as they are, like the leaves of a hedge,
+ *               and only its outline is averaged.
  * @return The texture; without any pixels when the sprite has none.
  */
-const GroundTexture &Renderer::GetBridgeSideTexture(SpriteID image, PaletteID pal, Axis axis)
+const GroundTexture &Renderer::GetSideTexture(SpriteID image, PaletteID pal, Axis axis, float climb, bool detail)
 {
 	/* Starting with a marker that no other texture has. */
 	this->key.clear();
@@ -2323,6 +2604,8 @@ const GroundTexture &Renderer::GetBridgeSideTexture(SpriteID image, PaletteID pa
 	this->key.push_back(image & SPRITE_MASK);
 	this->key.push_back(pal);
 	this->key.push_back(axis);
+	this->key.push_back(static_cast<int32_t>(std::lround(climb * 16)));
+	this->key.push_back(detail);
 	auto it = this->textures.find(this->key);
 	if (it != this->textures.end()) return it->second;
 	GroundTexture &tex = this->textures[this->key];
@@ -2338,10 +2621,10 @@ const GroundTexture &Renderer::GetBridgeSideTexture(SpriteID image, PaletteID pa
 	std::vector<float> painted_alpha(painted.pixels.size(), 0.0f);
 	PaintSprite(painted, painted_alpha, raw, pal, MARGIN, MARGIN, false);
 
-	/* Along the bridge, the isometric view goes two columns and a row per unit. */
+	/* Along the side, the isometric view goes two columns and a row per unit, less how much it climbs. */
 	constexpr int SAMPLES = 16;
 	const float dx = 2.0f;
-	const float dy = axis == AXIS_X ? -1.0f : 1.0f;
+	const float dy = (axis == AXIS_X ? -1.0f : 1.0f) * (1 - climb);
 	tex.left = raw.x_offs - MARGIN;
 	tex.top = raw.y_offs - MARGIN;
 	Picture &pic = tex.levels[0];
@@ -2363,8 +2646,13 @@ const GroundTexture &Renderer::GetBridgeSideTexture(SpriteID image, PaletteID pa
 				alpha_sum += painted_alpha[idx];
 			}
 			const size_t idx = static_cast<size_t>(y) * pic.width + x;
-			pic.pixels[idx] = sum * (1.0f / SAMPLES);
 			alpha[idx] = alpha_sum / SAMPLES;
+			if (detail && painted_alpha[idx] >= 0.5f) {
+				/* Premultiplied, like the averages. */
+				pic.pixels[idx] = painted.pixels[idx] * (alpha[idx] / painted_alpha[idx]);
+			} else {
+				pic.pixels[idx] = sum * (1.0f / SAMPLES);
+			}
 		}
 	}
 	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, false);
@@ -2377,7 +2665,7 @@ const GroundTexture &Renderer::GetBridgeSideTexture(SpriteID image, PaletteID pa
 /**
  * Add a side of a bridge, standing on the edge of its deck: an upright cut-out along the bridge, dressed in the
  * sprite of the side, with its heights scaled like those of buildings and vehicles. It is seen from both sides.
- * @param tex The texture of the side, see #Renderer::GetBridgeSideTexture.
+ * @param tex The texture of the side, see #Renderer::GetSideTexture.
  * @param sx Screen column where the viewport draws the sprite, in normal zoom pixels.
  * @param sy Screen row where the viewport draws the sprite, in normal zoom pixels.
  * @param axis The axis of the bridge.
@@ -2459,7 +2747,7 @@ void Renderer::AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_EN
 		side_y = static_cast<float>(near_side->y) / ZOOM_BASE;
 		std::optional<float> found = FindBridgeSide(this->GetBoxTexture(near_side->image, near_side->pal, false), side_x, side_y, axis, deck);
 		if (found.has_value()) near_plane = std::clamp(*found, c0 + TILE / 2 + 2, c0 + TILE);
-		side = &this->GetBridgeSideTexture(near_side->image, near_side->pal, axis);
+		side = &this->GetSideTexture(near_side->image, near_side->pal, axis);
 	}
 	const float far_plane = 2 * c0 + TILE - near_plane;
 	const float c_lo = std::min(c0 + BRIDGE_DECK_EDGE, far_plane - 0.5f);
@@ -2483,8 +2771,10 @@ void Renderer::AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_EN
 		this->AddTrack(tile, TrackToTrackBits(AxisToTrack(axis)), flat, true, dist);
 	}
 
-	/* Its edges and its bottom, in the colour of the pillars. */
-	const RGB colour = pillar != nullptr ? this->GetBoxTexture(pillar->image, pillar->pal, false).mean : tex.mean * 0.8f;
+	/* Its edges and its bottom, in the colour of the pillars; aqueducts are of stone, with walls along the water. */
+	const bool aqueduct = GetTunnelBridgeTransportType(head) == TRANSPORT_WATER;
+	const RGB colour = aqueduct ? AQUEDUCT_COLOUR : pillar != nullptr ? this->GetBoxTexture(pillar->image, pillar->pal, false).mean : tex.mean * 0.8f;
+	if (aqueduct) this->AddAqueductWalls(axis, a0, {c_lo, c_hi}, {deck, deck});
 	const float under = deck - DECK_DEPTH;
 	for (float c : {c_lo, c_hi}) {
 		this->AddFlatQuad({point(a0, c, under), point(a0 + TILE, c, under), point(a0 + TILE, c, deck), point(a0, c, deck)}, colour, 1.0f);
@@ -2497,8 +2787,10 @@ void Renderer::AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_EN
 		this->AddBridgeSide(*side, side_x, side_y, axis, far_plane, near_plane, {a0, a0 + TILE}, {deck, deck});
 	}
 
-	/* Two pillars with a beam across them, under the middle of the tile. */
-	if (pillar != nullptr) this->AddBridgePillars(tile, axis, a0 + TILE / 2, {c_lo, c_hi}, under, corner_z, split_we, colour);
+	/* Two pillars with a beam across them, under the middle of the tile; not where a railway, road or water passes under the bridge. */
+	if (pillar != nullptr && (IsTileType(tile, MP_CLEAR) || IsTileType(tile, MP_TREES))) {
+		this->AddBridgePillars(tile, axis, a0 + TILE / 2, {c_lo, c_hi}, under, corner_z, split_we, colour);
+	}
 }
 
 /**
@@ -2527,6 +2819,26 @@ void Renderer::AddBridgePillars(TileIndex tile, Axis axis, float along, std::pai
 	const Vec3 lo = point(along - half, across.first, under - 1.2f);
 	const Vec3 hi = point(along + half, across.second, under);
 	this->AddFlatBox({std::min(lo.x, hi.x), std::min(lo.y, hi.y), lo.z}, {std::max(lo.x, hi.x), std::max(lo.y, hi.y), hi.z}, colour);
+}
+
+/**
+ * Add the walls along the water of an aqueduct, on the edges of its deck along a tile.
+ * @param axis The axis of the aqueduct.
+ * @param a0 Where the tile starts along the aqueduct.
+ * @param across Where the deck starts and ends across the aqueduct.
+ * @param deck Height of the deck where the tile starts and ends along the aqueduct.
+ */
+void Renderer::AddAqueductWalls(Axis axis, float a0, std::pair<float, float> across, std::pair<float, float> deck)
+{
+	auto point = [axis](float a, float c, float z) { return axis == AXIS_X ? Vec3{a, c, z} : Vec3{c, a, z}; };
+	const float h = AQUEDUCT_WALL_HEIGHT;
+	for (float c : {across.first, across.second - AQUEDUCT_WALL}) {
+		const float c1 = c + AQUEDUCT_WALL;
+		for (float side : {c, c1}) {
+			this->AddFlatQuad({point(a0, side, deck.first), point(a0 + TILE, side, deck.second), point(a0 + TILE, side, deck.second + h), point(a0, side, deck.first + h)}, AQUEDUCT_COLOUR, 1.0f);
+		}
+		this->AddFlatQuad({point(a0, c, deck.first + h), point(a0 + TILE, c, deck.second + h), point(a0 + TILE, c1, deck.second + h), point(a0, c1, deck.first + h)}, AQUEDUCT_COLOUR, 1.0f);
+	}
 }
 
 /**
@@ -2586,6 +2898,11 @@ void Renderer::AddBridgeRamp(TileIndex tile, int ground_z, const std::array<floa
 		this->AddTexturedFace(tex, sx, sy, far_half, far_half, {0, 0, 1}, false);
 		this->AddTexturedFace(tex, sx, sy, near_half, near_shown, {0, 0, 1}, false);
 		colour = tex.mean * 0.8f;
+	}
+
+	if (GetTunnelBridgeTransportType(tile) == TRANSPORT_WATER) {
+		colour = AQUEDUCT_COLOUR;
+		this->AddAqueductWalls(axis, a0, {c_lo, c_hi}, {z0, z1});
 	}
 
 	/* Its edges and its bottom. */
@@ -2893,6 +3210,40 @@ void Renderer::Output(const Rect &r)
 }
 
 /**
+ * Get how high the eye may be, so it passes under the decks of bridges instead of through them; the isometric view
+ * lets vehicles pass under bridges a level above them, which leaves less room than the eye on their roof needs.
+ * Towards such a bridge, the eye is lowered gradually.
+ * @param x X coordinate of the eye.
+ * @param y Y coordinate of the eye.
+ * @param z Height of the eye.
+ * @return The highest the eye may be; \a z when no bridge is in the way.
+ */
+static float Headroom(float x, float y, float z)
+{
+	/* The tiles around the eye are far enough to lower it all the way. */
+	constexpr int REACH = 1;
+	const int tx = FloorDiv(static_cast<int32_t>(x), TILE_SIZE);
+	const int ty = FloorDiv(static_cast<int32_t>(y), TILE_SIZE);
+	float limit = z;
+	for (int dy = -REACH; dy <= REACH; dy++) {
+		for (int dx = -REACH; dx <= REACH; dx++) {
+			if (tx + dx < 0 || ty + dy < 0 || tx + dx >= static_cast<int>(Map::SizeX()) || ty + dy >= static_cast<int>(Map::SizeY())) continue;
+			const TileIndex tile = TileXY(tx + dx, ty + dy);
+			if (!IsBridgeAbove(tile)) continue;
+			const float under = static_cast<float>(GetBridgePixelHeight(GetSouthernBridgeEnd(tile))) - DECK_DEPTH;
+			/* Not the bridge the vehicle drives on, which is well below the eye. */
+			if (under < z - TILE_HEIGHT + DECK_DEPTH) continue;
+			const float x0 = static_cast<float>((tx + dx) * TILE_SIZE);
+			const float y0 = static_cast<float>((ty + dy) * TILE_SIZE);
+			const float out_x = std::max({x0 - x, 0.0f, x - x0 - TILE});
+			const float out_y = std::max({y0 - y, 0.0f, y - y0 - TILE});
+			limit = std::min(limit, under - BRIDGE_HEADROOM + std::hypot(out_x, out_y) * HEADROOM_SLOPE);
+		}
+	}
+	return limit;
+}
+
+/**
  * Draw the view.
  * @param r Where on the screen.
  * @param camera Where the camera is.
@@ -2929,7 +3280,7 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	float pitch = PITCH_DEG * static_cast<float>(M_PI) / 180.0f;
 	Vec3 flat_fwd = {std::cos(camera.yaw), std::sin(camera.yaw), 0};
 	Vec3 world_up = {0, 0, 1};
-	this->cam.pos = {camera.x, camera.y, camera.z};
+	this->cam.pos = {camera.x, camera.y, Headroom(camera.x, camera.y, camera.z)};
 	this->cam.right = flat_fwd.Cross(world_up);
 	this->cam.fwd = flat_fwd * std::cos(pitch) + world_up * std::sin(pitch);
 	this->cam.up = world_up * std::cos(pitch) - flat_fwd * std::sin(pitch);

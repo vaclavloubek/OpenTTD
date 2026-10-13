@@ -113,8 +113,17 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   bez rozšiřování neprůhledné oblasti, aby zůstaly štíhlé.
 - **Ostatní vlaky a silniční vozidla** jsou kvádry podél směru jízdy, potažené spritem vozidla jedoucího na
   jihozápad (délka z hry, šířka a výška ze spritu). Vozidlo, na kterém je kamera, se vynechává.
-- Budovy, stromy, návěstidla a vozidla se kreslí do 32 dlaždic. Ploty polí a ploty podél kolejí se zatím
-  vynechávají (na tenké kvádry se jejich sprity nepromítají dobře).
+- Budovy, stromy, návěstidla a vozidla se kreslí do 32 dlaždic.
+- **Ploty podél kolejí** (hra je staví u kolejí, kde soused není dráha té společnosti) jsou sloupky po 4 jednotkách
+  s horním a dolním břevnem, 3 jednotky vysoké, v průměrné barvě spritu plotu (tedy v barvě společnosti), kousek
+  od okraje dlaždice; úhlopříčné ploty u kusů kolejí v rohu vedou přes úhlopříčku. Sprite plotu je v OpenGFX
+  pletivo, které ve 3D dávalo zubatou zeď, proto geometrie (`AddRailFence`, `AddPostFence`). Kreslí se do
+  12 dlaždic, dál by sloupky byly tenčí než pixel.
+- **Ploty polí** (živé ploty, kvetoucí keře, kamenné zídky, dřevěné ohrady) jsou svislé výřezy ze spritu podél
+  strany pole, 0,6 jednotky uvnitř dlaždice. Kde plot stojí a jak je vysoký, se změří ze spodku spritu
+  (`FitFence`: ze sloupců vyjde stejná přímka i na svahu; bere se nejnižší desetina, protože mezi sloupky je
+  spodek břevno nad zemí). Obrys se průměruje podél plotu jako u boků mostů, barvy listí a kamenů ale zůstávají
+  ostré (`GetSideTexture` s `detail`); plot o kousek kratší než dlaždice se natáhne, aby na sebe navazovaly.
 - Testovací AI staví dvě dvojitá návěstidla na trati a vedle ní druhou rovnou trať s vlakem (na zkoušku
   návěstidel spustit novou hru s AI; vlak #1 v `kabina3d.sav` kolem žádných neprojíždí).
 - **Mosty**: mostovka je deska tlustá 2 jednotky, přes dlaždici široká jako ve hře (2 až 14 napříč), nahoře
@@ -124,16 +133,22 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   nosníky, oblouky) jsou svislé výřezy ze spritu bližšího boku; kde stojí, se změří ze spodního okraje spritu
   (`FindBridgeSide`, medián přes sloupce), vzdálenější bok je zrcadlo bližšího. Šikmé čáry podél mostu jsou ve
   spritu schody pixelů, které by ve 3D byly zuby; průhlednost se proto průměruje podél mostu přes celý schod
-  a o čtvrtinu zesílí, aby tenké čáry zůstaly (`GetBridgeSideTexture`). Výšky boků jsou 0,6× jako u budov.
-  Pod mostovkou jsou dva pilíře s příčníkem v barvě pilířů hry. Nájezd je šikmá deska stejné šíře na pilířích
-  u mostu (ve hře je to taky jen deska), kolej na něm stoupá.
+  a o čtvrtinu zesílí, aby tenké čáry zůstaly (`GetSideTexture`). Výšky boků jsou 0,6× jako u budov.
+  Pod mostovkou jsou dva pilíře s příčníkem v barvě pilířů hry, jen nad volnou zemí a stromy (ne nad kolejí,
+  silnicí nebo vodou, kde by stály v cestě). Nájezd je šikmá deska stejné šíře na pilířích u mostu (ve hře je to
+  taky jen deska), kolej na něm stoupá. Silniční mosty jsou stejné, jen bez koleje.
+- **Akvadukty** jsou z kamene (světle šedé): mostovka s vodou ze spritu, podél ní zídky 2 jednotky vysoké,
+  pilíře i nájezdy v barvě kamene (pilíře ze spritu hry jsou tmavé, akvadukt pak vypadal jako černý trám).
+- **Pod mostem**: hra pouští vozidla pod most o úroveň výš, ale oko na střeše vlaku (8 jednotek nad kolejí) by
+  projelo mostovkou. Pod mostem se proto oko sníží na 1,5 jednotky pod mostovku, plynule o 0,5 jednotky na
+  jednotku cesty už před mostem (`Headroom`).
 - **Tunely**: vjezd je kamenný portál s obloukem, světlým věncem kolem otvoru, tmou uvnitř a opěrnými zdmi
   podél koleje; kopec nad vjezdem se ve 3D neklesá, kolej vede rovně do portálu (`SetTunnelGround`,
   `AddTunnelPortal`). V tunelu je obraz dál černý.
 - **Přejezdy**: u silnice před a za kolejí stojí čtyři sloupky s bílým křížem a dvěma světly směrem k silnici;
   když hra přejezd zavře, svítí červeně (`AddCrossing`). Silnice jinak zůstávají texturou země.
-- Testovací AI teď navíc staví kopec s tunelem, dva železniční mosty přes silnice a přejezd.
-  Most přes kanál a další typy mostů zatím vyzkoušené nejsou.
+- Testovací AI teď navíc staví kopec s tunelem, dva železniční mosty přes silnice, přejezd, silniční most přes
+  trať (kde je místo) a akvadukt přes trať mezi dvěma uměle navršenými svahy.
 - Na Macu (13. 10.) byly vidět les jako zelený kvádr, sila
   jako šedé „šipky“ a budova nádraží jako vysoký sloup; opraveno novým rozpoznáním tvaru výše. Pak budova
   nádraží jako šikmá deska a návěstidla jako tři zelené obrázky nad sebou; opraveno tvarem nádraží a 3D návěstidly.
@@ -143,8 +158,8 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
    `openttd-cab-view-macos-arm64`, stáhnout ze stránky běhu na GitHubu, rozbalit, spustit). Na MacBooku Air
    3D pohled běží v plném rozlišení Retiny.
-2. Krok 4: doplnit 3D svět – budovy, návěstidla, stromy, ostatní vozidla, mosty, portály tunelů a přejezdy
-   jsou hotové; zbývá vyzkoušet na Macu a doladit podle toho (ploty, mosty pro silnice, akvadukty).
+2. Krok 4: doplnit 3D svět – budovy, návěstidla, stromy, ostatní vozidla, mosty, portály tunelů, přejezdy,
+   ploty, silniční mosty a akvadukty jsou hotové; zbývá vyzkoušet ploty a akvadukty na Macu.
 3. Případně: výhled podél silnice i pro silniční vozidla (`CFollowTrackRoad`), další údaje na palubní desce
    (návěst, sklon), klávesová zkratka pro otevření kabiny.
 
