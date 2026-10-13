@@ -93,6 +93,8 @@
 #	include <emscripten/html5.h>
 #endif
 
+#include "cab_view_rec.h"
+
 #include "safeguards.h"
 
 void CallLandscapeTick();
@@ -1352,8 +1354,8 @@ void GameLoop()
 	ProcessAsyncSaveFinish();
 
 	if (_game_mode == GM_NORMAL) {
-		static auto last_time = std::chrono::steady_clock::now();
-		auto now = std::chrono::steady_clock::now();
+		static auto last_time = RecNow();
+		auto now = RecNow();
 		auto delta_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time);
 		if (delta_ms.count() != 0) {
 			TimerManager<TimerGameRealtime>::Elapsed(delta_ms);
