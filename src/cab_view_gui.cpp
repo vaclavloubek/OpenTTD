@@ -39,6 +39,8 @@
 #include "table/strings.h"
 #include "table/sprites.h"
 
+#include "cab_view_rec.h"
+
 #include "safeguards.h"
 
 /** Whether cab views look ahead in the direction of travel. Shared by all cab views. */
@@ -259,7 +261,7 @@ private:
 		float behind = GetTrackHeight(v, x, y);
 		camera.pitch = CAB_VIEW_3D_TILT * std::atan2(ahead - behind, 2 * half_length);
 
-		auto now = std::chrono::steady_clock::now();
+		auto now = RecNow();
 		if (jump) {
 			this->tick_cameras.clear();
 		} else {
@@ -300,7 +302,7 @@ private:
 	 */
 	void Advance3DClock()
 	{
-		auto now = std::chrono::steady_clock::now();
+		auto now = RecNow();
 		double ms = std::chrono::duration<double, std::milli>(now - this->clock_time).count();
 		this->clock_time = now;
 
@@ -769,7 +771,7 @@ public:
 		if (this->Is3D()) {
 			/* The time is measured here, as delta_ms is rounded down and would make the pace uneven. */
 			this->Advance3DClock();
-			auto now = std::chrono::steady_clock::now();
+			auto now = RecNow();
 			float ms = std::chrono::duration<float, std::milli>(now - this->redraw_time).count();
 			this->redraw_time = now;
 			if (ms < 100) this->redraw_interval += (ms - this->redraw_interval) * 0.05f;
@@ -795,6 +797,10 @@ public:
 				this->pace_time = now;
 			}
 			this->frame_budget = budget * this->frame_divider;
+			if (RecActive()) {
+				this->frame_divider = 1;
+				this->frame_budget = 0;
+			}
 
 			/* Redraw the 3D view when the camera moved; when standing still, still now and then, as the world around may change. */
 			this->redraws_since_frame++;

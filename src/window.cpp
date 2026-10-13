@@ -42,6 +42,8 @@
 
 #include "table/strings.h"
 
+#include "cab_view_rec.h"
+
 #include "safeguards.h"
 
 /** Values for _settings_client.gui.auto_scrolling */
@@ -2976,12 +2978,12 @@ void HandleMouseEvents()
 	MouseClick click = MC_NONE;
 	if (_left_button_down && !_left_button_clicked) {
 		click = MC_LEFT;
-		if (std::chrono::steady_clock::now() <= double_click_time + TIME_BETWEEN_DOUBLE_CLICK &&
+		if (RecNow() <= double_click_time + TIME_BETWEEN_DOUBLE_CLICK &&
 				double_click_pos.x != 0 && abs(_cursor.pos.x - double_click_pos.x) < MAX_OFFSET_DOUBLE_CLICK  &&
 				double_click_pos.y != 0 && abs(_cursor.pos.y - double_click_pos.y) < MAX_OFFSET_DOUBLE_CLICK) {
 			click = MC_DOUBLE_LEFT;
 		}
-		double_click_time = std::chrono::steady_clock::now();
+		double_click_time = RecNow();
 		double_click_pos = _cursor.pos;
 		_left_button_clicked = true;
 	} else if (_right_button_clicked) {
@@ -3003,13 +3005,13 @@ void HandleMouseEvents()
 				hover_pos.x == 0 || abs(_cursor.pos.x - hover_pos.x) >= MAX_OFFSET_HOVER  ||
 				hover_pos.y == 0 || abs(_cursor.pos.y - hover_pos.y) >= MAX_OFFSET_HOVER) {
 			hover_pos = _cursor.pos;
-			hover_time = std::chrono::steady_clock::now();
+			hover_time = RecNow();
 			_mouse_hovering = false;
 		} else if (!_mouse_hovering) {
-			if (std::chrono::steady_clock::now() > hover_time + std::chrono::milliseconds(_settings_client.gui.hover_delay_ms)) {
+			if (RecNow() > hover_time + std::chrono::milliseconds(_settings_client.gui.hover_delay_ms)) {
 				click = MC_HOVER;
 				_mouse_hovering = true;
-				hover_time = std::chrono::steady_clock::now();
+				hover_time = RecNow();
 			}
 		}
 	}
@@ -3078,7 +3080,7 @@ static std::chrono::time_point<std::chrono::steady_clock> _realtime_tick_start;
 
 bool CanContinueRealtimeTick()
 {
-	auto now = std::chrono::steady_clock::now();
+	auto now = RecNow();
 	return std::chrono::duration_cast<std::chrono::milliseconds>(now - _realtime_tick_start).count() < (MILLISECONDS_PER_TICK * 3 / 4);
 }
 
@@ -3087,7 +3089,7 @@ bool CanContinueRealtimeTick()
  */
 void CallWindowRealtimeTickEvent(uint delta_ms)
 {
-	_realtime_tick_start = std::chrono::steady_clock::now();
+	_realtime_tick_start = RecNow();
 	for (Window *w : Window::Iterate()) {
 		w->OnRealtimeTick(delta_ms);
 	}
@@ -3126,8 +3128,8 @@ static const IntervalTimer<TimerWindow> white_border_interval(std::chrono::milli
  */
 void UpdateWindows()
 {
-	static auto last_time = std::chrono::steady_clock::now();
-	auto now = std::chrono::steady_clock::now();
+	static auto last_time = RecNow();
+	auto now = RecNow();
 	auto delta_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time);
 
 	if (delta_ms.count() == 0) return;

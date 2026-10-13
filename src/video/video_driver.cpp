@@ -22,6 +22,8 @@
 #include "../window_func.h"
 #include "video_driver.hpp"
 
+#include "../cab_view_rec.h"
+
 #include "../safeguards.h"
 
 bool _video_hw_accel; ///< Whether to consider hardware accelerated video drivers on startup.
@@ -32,7 +34,7 @@ void VideoDriver::GameLoop()
 	this->next_game_tick += this->GetGameInterval();
 
 	/* Avoid next_game_tick getting behind more and more if it cannot keep up. */
-	auto now = std::chrono::steady_clock::now();
+	auto now = RecNow();
 	if (this->next_game_tick < now - ALLOWED_DRIFT * this->GetGameInterval()) this->next_game_tick = now;
 
 	{
@@ -47,7 +49,7 @@ void VideoDriver::GameThread()
 	while (!_exit_game) {
 		this->GameLoop();
 
-		auto now = std::chrono::steady_clock::now();
+		auto now = RecNow();
 		if (this->next_game_tick > now) {
 			std::this_thread::sleep_for(this->next_game_tick - now);
 		} else {
@@ -103,7 +105,7 @@ void VideoDriver::StopGameThread()
 
 void VideoDriver::Tick()
 {
-	if (!this->is_game_threaded && std::chrono::steady_clock::now() >= this->next_game_tick) {
+	if (!this->is_game_threaded && RecNow() >= this->next_game_tick) {
 		this->GameLoop();
 
 		/* For things like dedicated server, don't run a separate draw-tick. */
@@ -114,7 +116,7 @@ void VideoDriver::Tick()
 		}
 	}
 
-	auto now = std::chrono::steady_clock::now();
+	auto now = RecNow();
 	if (this->HasGUI() && now >= this->next_draw_tick) {
 		this->next_draw_tick += this->GetDrawInterval();
 		/* Avoid next_draw_tick getting behind more and more if it cannot keep up. */
@@ -122,6 +124,7 @@ void VideoDriver::Tick()
 
 		/* Locking video buffer can block (especially with vsync enabled), do it before taking game state lock. */
 		this->LockVideoBuffer();
+		RecBeginFrame();
 
 		{
 			/* Tell the game-thread to stop so we can have a go. */
@@ -158,6 +161,7 @@ void VideoDriver::Tick()
 
 		this->CheckPaletteAnim();
 		this->Paint();
+		RecEndFrame(this->GetDrawInterval());
 
 		this->UnlockVideoBuffer();
 
@@ -173,7 +177,7 @@ void VideoDriver::Tick()
 void VideoDriver::SleepTillNextTick()
 {
 	auto next_tick = this->next_draw_tick;
-	auto now = std::chrono::steady_clock::now();
+	auto now = RecNow();
 
 	if (!this->is_game_threaded) {
 		next_tick = min(next_tick, this->next_game_tick);

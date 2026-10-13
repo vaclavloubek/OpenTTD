@@ -96,6 +96,8 @@ add_files(
     cab_view_3d.cpp
     cab_view_3d.h
     cab_view_gui.cpp
+    cab_view_rec.cpp
+    cab_view_rec.h
     cachecheck.cpp
     cargo_type.h
     cargoaction.cpp

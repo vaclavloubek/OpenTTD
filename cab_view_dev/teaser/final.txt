@@ -1,0 +1,17 @@
+0 close aidebug
+20 close aidebug
+40 close aidebug
+80 close aidebug
+0 follow 7
+0 move 1 xy 1500 2700
+410 move 65 veh 7
+478 click
+500 move 90 xy 860 780
+650 move 50 wid veh 17
+705 click
+712 move 50 xy 700 2500
+780 move 45 wid cab 8
+835 click
+842 move 45 xy 2060 2960
+1180 news First person view.\nComing soon.
+1420 quit
