@@ -40,6 +40,9 @@
 #include "clear_map.h"
 #include "rail.h"
 #include "newgrf_railtype.h"
+#include "road.h"
+#include "newgrf_roadstop.h"
+#include "company_func.h"
 #include "settings_type.h"
 #include "track_func.h"
 #include "spritecache.h"
@@ -89,6 +92,8 @@ constexpr float TRACK_SMOOTH_LENGTH = 2.0f; ///< Length along straight track ove
 constexpr float BOX_DIST = 32.0f * TILE; ///< Buildings, trees, signals and vehicles are drawn up to this distance.
 constexpr float PLATFORM_HEIGHT = 0.5f; ///< Heights of the platforms of stations in the 3D view, compared to their boxes; from the cab, real platforms reach well below the eye.
 constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles in the 3D view, compared to their heights in the sprites; the isometric view makes them look tall.
+constexpr float ROAD_VEHICLE_HEIGHT = 1.6f; ///< Heights and widths of road vehicles in the 3D view, compared to those in their sprites; seen from the cab of a bus, the roof of another bus is above the eye.
+constexpr float ROAD_VEHICLE_MAX_WIDTH = 4.0f; ///< Widest a road vehicle is drawn in the 3D view, so it stays in its lane.
 constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
 constexpr float ISO_UNITS = 0.3536f; ///< Width of a sprite pixel across the view, in world units; the isometric view draws a unit as 2 * sqrt(2) pixels.
 constexpr float MIN_ROOF_HEIGHT = 3.0f; ///< A building is given a roof when its sprite reaches at least this much above its walls.
@@ -121,6 +126,14 @@ constexpr float PORTAL_DEPTH = 3.0f; ///< How far the walls of the opening of a 
 constexpr int PORTAL_SEGMENTS = 8; ///< Number of pieces of the arch of a tunnel.
 constexpr float TUNNEL_STEP = 4.0f; ///< Length of the pieces of the vault inside a tunnel; every other one is a bit darker, so the walls are seen to pass by.
 constexpr float TUNNEL_GLOW = 12.0f; ///< Distance from an entrance of a tunnel over which most of the daylight inside it fades.
+
+constexpr float PAVEMENT_WIDTH = 3.0f; ///< Width of the pavements of town roads, from the side of the tile to the kerb, as the graphics paint them.
+constexpr float KERB_HEIGHT = 0.3f; ///< How high the pavements of town roads stand above the roadway.
+constexpr float TRAM_RAIL_WIDTH = 0.3f; ///< Width of the rails of tram track, sunk into the road.
+constexpr int ROAD_ARC_SEGMENTS = 8; ///< Number of pieces of the arcs of curved roads.
+constexpr float ROAD_LINE_LENGTH = 1.6f; ///< Length of the dashes of the line in the middle of roads.
+constexpr float ROAD_LINE_WIDTH = 0.3f; ///< Width of the line in the middle of roads.
+constexpr float ROAD_LINE_SPACING = 4.0f; ///< Distance between the dashes of the line in the middle of roads, as the graphics paint them.
 
 /** Direction each way something can face goes to, in world coordinates. */
 constexpr std::array<std::pair<float, float>, DIR_END> HEADINGS = {{
@@ -174,6 +187,16 @@ constexpr RGB TUNNEL_FLOOR_LIT = {70, 62, 54}; ///< Colour of the ballast inside
 constexpr RGB TUNNEL_FLOOR_DARK = {12, 11, 10}; ///< Colour of the ballast deep inside a tunnel.
 constexpr RGB TUNNEL_RAIL_LIT = {180, 180, 182}; ///< Colour of the rails inside a tunnel at its entrances.
 constexpr RGB TUNNEL_RAIL_DARK = {56, 56, 58}; ///< Colour of the rails deep inside a tunnel, which still catch the light from its ends.
+constexpr RGB TRAM_RAIL_COLOUR = {150, 150, 154}; ///< Colour of the rails of tram track.
+constexpr RGB KERB_COLOUR = {178, 176, 170}; ///< Colour of the kerbs of town roads.
+constexpr RGB ROAD_LINE_COLOUR = {236, 236, 228}; ///< Colour of the line in the middle of roads.
+constexpr RGB ROAD_LINE_FAR_COLOUR = {116, 116, 116}; ///< Colour of the line in the middle of roads far away, about that of the road.
+constexpr RGB SHELTER_FRAME_COLOUR = {196, 198, 204}; ///< Colour of the posts of bus shelters.
+constexpr RGB SHELTER_GLASS_COLOUR = {112, 146, 170}; ///< Colour of the glass of the walls and roofs of bus shelters.
+constexpr RGB SHELTER_BENCH_COLOUR = {132, 92, 52}; ///< Colour of the benches in bus shelters.
+constexpr RGB BOOTH_COLOUR = {150, 72, 52}; ///< Colour of the brick booths of lorry stops.
+constexpr RGB TUNNEL_ROAD_LIT = {84, 84, 84}; ///< Colour of the road inside a tunnel at its entrances.
+constexpr RGB TUNNEL_ROAD_DARK = {14, 14, 14}; ///< Colour of the road deep inside a tunnel.
 constexpr RGB AQUEDUCT_COLOUR = {178, 174, 166}; ///< Colour of the stone of aqueducts.
 
 /** A vector in world coordinates. */
@@ -491,6 +514,8 @@ struct ScreenTriangle {
 	Paint paint; ///< How to paint it.
 };
 
+struct RoadLook;
+
 /** The renderer, with its buffers and caches. */
 class Renderer {
 public:
@@ -562,6 +587,8 @@ private:
 	void DrawSky();
 	void AddTile(TileIndex tile, float dist);
 	void AddTrack(TileIndex tile, TrackBits tracks, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddRoad(TileIndex tile, const RoadLook &look, const GroundTexture &tex, int raw_z, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
+	void AddRoadStop(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we);
 	void AddBridgeSide(const GroundTexture &tex, float sx, float sy, Axis axis, float plane, float shown_plane, std::pair<float, float> along, std::pair<float, float> deck);
 	void AddBridgeMiddle(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddBridgePillars(TileIndex tile, Axis axis, float along, std::pair<float, float> across, float under, const std::array<float, CORNER_END> &corner_z, bool split_we, const RGB &colour);
@@ -645,6 +672,24 @@ static bool IsUnderBuilding(const SpriteLoader::CommonPixel &p)
 	if (p.m != 0) return p.m == 1;
 	return p.r <= 20 && p.g <= 20 && p.b <= 20;
 }
+
+/**
+ * Whether a pixel of the ground of a road is part of the line painted in its middle.
+ * The original graphics paint it in the brightest white of the palette.
+ * @param p The pixel.
+ * @return True for the pixels of the line.
+ */
+static bool IsRoadLine(const SpriteLoader::CommonPixel &p)
+{
+	return p.m == 15;
+}
+
+/** Pixels of the ground sprites that are left out, and filled from the ground around them. */
+enum class SkipPixels : uint8_t {
+	None, ///< Keep all pixels.
+	UnderBuilding, ///< The area under buildings, see #IsUnderBuilding.
+	RoadLine, ///< The line in the middle of roads, see #IsRoadLine; the 3D view draws it sharp.
+};
 
 /**
  * Smooth a picture along a direction: every pixel becomes the average of the picture along a line through it.
@@ -762,16 +807,17 @@ static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int pass
  * @param pal Its palette.
  * @param ox Column of the picture for the top left pixel of the sprite.
  * @param oy Row of the picture for the top left pixel of the sprite.
- * @param skip_under_building Leave out the pixels under buildings, see #IsUnderBuilding.
+ * @param skip Which pixels to leave out.
  */
-static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite &raw, PaletteID pal, int ox, int oy, bool skip_under_building)
+static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite &raw, PaletteID pal, int ox, int oy, SkipPixels skip = SkipPixels::None)
 {
 	const uint8_t *remap = (pal != PAL_NONE) ? GetNonSprite(GB(pal, 0, PALETTE_WIDTH), SpriteType::Recolour) + 1 : nullptr;
 	for (int y = 0; y < raw.height; y++) {
 		for (int x = 0; x < raw.width; x++) {
 			const SpriteLoader::CommonPixel &p = raw.pixels[y * raw.width + x];
 			if (p.a == 0) continue;
-			if (skip_under_building && IsUnderBuilding(p)) continue;
+			if (skip == SkipPixels::UnderBuilding && IsUnderBuilding(p)) continue;
+			if (skip == SkipPixels::RoadLine && IsRoadLine(p)) continue;
 			RGB c;
 			if (p.m != 0) {
 				const Colour &pc = _cur_palette.palette[remap != nullptr ? remap[p.m] : p.m];
@@ -785,6 +831,69 @@ static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite
 			alpha[idx] = a + alpha[idx] * (1 - a);
 		}
 	}
+}
+
+/** How the 3D view draws a road tile, see Renderer::AddRoad. */
+struct RoadLook {
+	RoadBits road = ROAD_NONE; ///< Pieces of road.
+	RoadBits tram = ROAD_NONE; ///< Pieces of tram track.
+	bool plain = false; ///< Whether the graphics paint it plainly, so the line they paint in the middle is left out.
+	bool line = false; ///< Whether the line in the middle is drawn sharp, instead of the one the graphics paint.
+	bool pavement = false; ///< Whether it has raised pavements along it.
+	bool stop = false; ///< Whether it is a drive-through road stop of the base graphics, with shelters on its pavements.
+};
+
+/**
+ * Whether pieces of road make a curve.
+ * @param bits The pieces.
+ * @return True when they are two neighbouring sides of the tile.
+ */
+static bool IsRoadCurve(RoadBits bits)
+{
+	return bits == ROAD_N || bits == ROAD_E || bits == ROAD_S || bits == ROAD_W;
+}
+
+/**
+ * Find out how the 3D view draws a road tile.
+ * The line in the middle of straight and curved roads, and the pavements of town roads, are drawn
+ * sharp and the pavements raised, for the road types of the base graphics, whose sprites are known.
+ * @param tile The tile.
+ * @return What is drawn; nothing for tiles other than plain road and drive-through road stops.
+ */
+static RoadLook GetRoadLook(TileIndex tile)
+{
+	RoadLook look;
+	/* Drive-through road stops of the base graphics lie on a straight town road, with pavements on both sides. */
+	const bool stop = IsDriveThroughStopTile(tile) && !IsRoadWaypoint(tile) && GetRoadStopSpec(tile) == nullptr;
+	if (IsTunnelTile(tile) && GetTunnelBridgeTransportType(tile) == TRANSPORT_ROAD) {
+		/* The entrance of a road tunnel has plain road in front of it, see SetTunnelGround. */
+		const RoadBits bits = AxisToRoadBits(DiagDirToAxis(GetTunnelBridgeDirection(tile)));
+		if (HasTileRoadType(tile, RTT_TRAM)) look.tram = bits;
+		if (HasTileRoadType(tile, RTT_ROAD)) look.road = bits;
+		look.plain = look.road != ROAD_NONE && look.tram == ROAD_NONE && !GetRoadTypeInfo(GetRoadTypeRoad(tile))->UsesOverlay();
+		look.line = look.plain;
+		return look;
+	}
+	if (!stop && (!IsTileType(tile, MP_ROAD) || !IsNormalRoad(tile))) return look;
+	const RoadBits stop_bits = stop ? AxisToRoadBits(GetDriveThroughStopAxis(tile)) : ROAD_NONE;
+	if (HasTileRoadType(tile, RTT_TRAM)) look.tram = stop ? stop_bits : GetRoadBits(tile, RTT_TRAM);
+	if (!HasTileRoadType(tile, RTT_ROAD)) return look;
+	look.road = stop ? stop_bits : GetRoadBits(tile, RTT_ROAD);
+	if (GetRoadTypeInfo(GetRoadTypeRoad(tile))->UsesOverlay()) return look;
+	if (stop) {
+		look.plain = look.tram == ROAD_NONE;
+		look.line = look.plain;
+		look.pavement = true;
+		look.stop = true;
+		return look;
+	}
+	if (HasRoadWorks(tile)) return look;
+	/* The line goes along straight and curved roads, not over junctions; with tram track in the middle of the road, there is none. */
+	look.plain = look.tram == ROAD_NONE;
+	look.line = look.plain && (look.road == ROAD_X || look.road == ROAD_Y || IsRoadCurve(look.road));
+	const Roadside side = GetRoadside(tile);
+	look.pavement = !IsOnSnowOrDesert(tile) && (side == Roadside::Paved || side == Roadside::StreetLights || side == Roadside::Trees);
+	return look;
 }
 
 /**
@@ -838,6 +947,9 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 		}
 	}
 
+	/* The line in the middle of the road is drawn sharp, see AddRoad. */
+	const bool road_line = GetRoadLook(tile).plain;
+
 	/* Positions relative to the north corner of the tile, in normal zoom pixels. */
 	Point origin = RemapCoords(TileX(tile) * TILE_SIZE, TileY(tile) * TILE_SIZE, tile_z);
 	this->key.clear();
@@ -849,9 +961,10 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 		this->key.push_back(FloorDiv(gs.y - origin.y, ZOOM_BASE));
 	}
 	size_t sprite_keys = this->key.size();
-	if (sprite_keys != 0 && (smooth.first != 0 || smooth.second != 0)) {
+	if (sprite_keys != 0 && (smooth.first != 0 || smooth.second != 0 || road_line)) {
 		this->key.push_back(static_cast<int32_t>(std::lround(smooth.first * 64)));
 		this->key.push_back(static_cast<int32_t>(std::lround(smooth.second * 64)));
+		this->key.push_back(road_line);
 	}
 
 	auto it = this->textures.find(this->key);
@@ -886,7 +999,8 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 	/* Put the sprites on top of each other, like the viewport draws them. */
 	for (size_t i = 0; i < sprite_keys; i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
-		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top, building);
+		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top,
+				building ? SkipPixels::UnderBuilding : road_line ? SkipPixels::RoadLine : SkipPixels::None);
 	}
 
 	FinishTexture(tex, std::move(alpha), building ? MAX_FILL_PASSES : 4, false, smooth);
@@ -917,7 +1031,7 @@ const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal, bool
 	pic.height = raw.height;
 	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, {0, 0, 0});
 	std::vector<float> alpha(pic.pixels.size(), 0.0f);
-	PaintSprite(pic, alpha, raw, pal, 0, 0, false);
+	PaintSprite(pic, alpha, raw, pal, 0, 0);
 	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, widen);
 	return tex;
 }
@@ -964,7 +1078,7 @@ const GroundTexture &Renderer::GetCompositeTexture(std::span<const BoxSpriteToDr
 	std::vector<float> alpha(pic.pixels.size(), 0.0f);
 	for (size_t i = 1; i < this->key.size(); i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
-		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top, false);
+		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top);
 	}
 	FinishTexture(tex, std::move(alpha), 4, false);
 	return tex;
@@ -1270,15 +1384,17 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	/* The game splits a slope along the line between the two corners at the same height. */
 	bool split_we = corner_z[CORNER_W] == corner_z[CORNER_E] || corner_z[CORNER_N] != corner_z[CORNER_S];
 
-	/* Straight track: smooth its ground along the track, over whole steps of the pixels of its edges.
+	/* Straight track or road: smooth its ground along it, over whole steps of the pixels of its edges.
 	 * Going a unit along it moves two columns in the texture, and a row less how much it climbs. */
 	std::pair<float, float> smooth = {0, 0};
 	/* The track of a bridge ramp is on the ramp, see AddBridgeRamp. */
 	TrackBits tracks = IsBridgeTile(tile) ? TRACK_BIT_NONE : GetTileRailTracks(tile);
-	if (tracks == TRACK_BIT_X) {
+	const RoadLook road = GetRoadLook(tile);
+	const RoadBits road_bits = road.road | road.tram;
+	if (tracks == TRACK_BIT_X || (tracks == TRACK_BIT_NONE && road_bits == ROAD_X)) {
 		float climb = (corner_z[CORNER_W] + corner_z[CORNER_S] - corner_z[CORNER_N] - corner_z[CORNER_E]) / (2 * TILE);
 		smooth = {-2 * TRACK_SMOOTH_LENGTH, (1 - climb) * TRACK_SMOOTH_LENGTH};
-	} else if (tracks == TRACK_BIT_Y) {
+	} else if (tracks == TRACK_BIT_Y || (tracks == TRACK_BIT_NONE && road_bits == ROAD_Y)) {
 		float climb = (corner_z[CORNER_E] + corner_z[CORNER_S] - corner_z[CORNER_N] - corner_z[CORNER_W]) / (2 * TILE);
 		smooth = {2 * TRACK_SMOOTH_LENGTH, (1 - climb) * TRACK_SMOOTH_LENGTH};
 	}
@@ -1332,6 +1448,8 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	}
 
 	this->AddTrack(tile, tracks, corner_z, split_we, dist);
+	if (road_bits != ROAD_NONE) this->AddRoad(tile, road, tex, raw_z, corner_z, split_we, dist);
+	if (boxes && road.stop) this->AddRoadStop(tile, corner_z, split_we);
 	if (tunnel) this->AddTunnelPortal(tile, raw_z);
 	if (IsBridgeTile(tile)) this->AddBridgeRamp(tile, raw_z, corner_z, split_we, dist);
 	if (IsBridgeAbove(tile)) this->AddBridgeMiddle(tile, corner_z, split_we, dist);
@@ -1360,6 +1478,8 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					break;
 
 				case MP_STATION:
+					/* The shelters of road stops are drawn whole, see AddRoadStop. */
+					if (road.stop) break;
 					if (IsAirport(tile)) {
 						/* The lights along the runways are drawn in empty boxes; standing up, they looked like heaps. */
 						if (box.child || box.zmax < box.zmin) break;
@@ -2651,7 +2771,7 @@ const GroundTexture &Renderer::GetSideTexture(SpriteID image, PaletteID pal, Axi
 	painted.height = raw.height + 2 * MARGIN;
 	painted.pixels.assign(static_cast<size_t>(painted.width) * painted.height, {0, 0, 0});
 	std::vector<float> painted_alpha(painted.pixels.size(), 0.0f);
-	PaintSprite(painted, painted_alpha, raw, pal, MARGIN, MARGIN, false);
+	PaintSprite(painted, painted_alpha, raw, pal, MARGIN, MARGIN);
 
 	/* Along the side, the isometric view goes two columns and a row per unit, less how much it climbs. */
 	constexpr int SAMPLES = 16;
@@ -3059,8 +3179,8 @@ bool Renderer::InLineWithTunnel(TileIndex tile, int z) const
 }
 
 /**
- * Add the inside of a tunnel, for a camera in it or in line with it: a dark vault over the track, lighter towards
- * the entrances, where the daylight comes in. Tunnels are straight, so the far entrance shows as a bright opening.
+ * Add the inside of a tunnel, for a camera in it or in line with it: a dark vault over the track or road, lighter
+ * towards the entrances, where the daylight comes in. Tunnels are straight, so the far entrance shows as a bright opening.
  * @param tile An entrance of the tunnel.
  * @param z Height of the bottom of the entrance tile, where the track goes into the tunnel.
  */
@@ -3071,7 +3191,8 @@ void Renderer::AddTunnelInside(TileIndex tile, int z)
 	this->tunnels.push_back(tile);
 
 	const auto [face, in, side] = GetTunnelFace(tile, z);
-	/* A point s to the side and h above the track, d into the tunnel from the face of the portal. */
+	const bool road = GetTunnelBridgeTransportType(tile) == TRANSPORT_ROAD;
+	/* A point s to the side and h above the track or road, d into the tunnel from the face of the portal. */
 	auto at = [&](float s, float h, float d) { return face + side * s + in * d + Vec3{0, 0, h}; };
 
 	/* Only the part from a bit behind the camera to where the haze swallows everything. */
@@ -3099,9 +3220,20 @@ void Renderer::AddTunnelInside(TileIndex tile, int z)
 			const auto [s1, h1] = profile[i + 1];
 			this->AddFlatQuad({at(s0, h0, d0), at(s1, h1, d0), at(s1, h1, d1), at(s0, h0, d1)}, vault, 1.0f, true);
 		}
-		this->AddFlatQuad({at(-PORTAL_OPENING, 0, d0), at(PORTAL_OPENING, 0, d0), at(PORTAL_OPENING, 0, d1), at(-PORTAL_OPENING, 0, d1)}, TUNNEL_FLOOR_LIT * day + TUNNEL_FLOOR_DARK * (1 - day), 1.0f, true);
+		const RGB floor = road ? TUNNEL_ROAD_LIT * day + TUNNEL_ROAD_DARK * (1 - day) : TUNNEL_FLOOR_LIT * day + TUNNEL_FLOOR_DARK * (1 - day);
+		this->AddFlatQuad({at(-PORTAL_OPENING, 0, d0), at(PORTAL_OPENING, 0, d0), at(PORTAL_OPENING, 0, d1), at(-PORTAL_OPENING, 0, d1)}, floor, 1.0f, true);
 
 		const float dist = std::abs(middle - camera);
+		if (road) {
+			/* The line in the middle of the road, which catches the light. */
+			if (dist < RAIL_DIST) {
+				const float hl = ROAD_LINE_LENGTH / 2, hw = ROAD_LINE_WIDTH / 2;
+				for (float d = std::ceil(d0 / ROAD_LINE_SPACING) * ROAD_LINE_SPACING + ROAD_LINE_SPACING / 2; d < d1; d += ROAD_LINE_SPACING) {
+					this->AddFlatQuad({at(-hw, 0.03f, d - hl), at(hw, 0.03f, d - hl), at(hw, 0.03f, d + hl), at(-hw, 0.03f, d + hl)}, ROAD_LINE_COLOUR * (0.15f + 0.85f * day), 1.0005f, true);
+				}
+			}
+			continue;
+		}
 		if (dist < SLEEPER_DIST) {
 			const float hl = SLEEPER_LENGTH / 2, hw = SLEEPER_WIDTH / 2;
 			for (float d = d0 + SLEEPER_SPACING / 2; d < d1; d += SLEEPER_SPACING) {
@@ -3153,6 +3285,8 @@ void Renderer::AddVehicles(VehicleID own)
 		uint8_t veh_length = (v->type == VEH_TRAIN) ? Train::From(v)->gcache.cached_veh_length : RoadVehicle::From(v)->gcache.cached_veh_length;
 		float length = static_cast<float>(veh_length);
 		float width = std::clamp(pic.width / 2.0f - length, 1.5f, std::max(length, 1.5f));
+		/* Road vehicles are drawn small for their length; widen them as much as they are made taller, but keep them in their lane. */
+		if (v->type == VEH_ROAD) width = std::min(width * ROAD_VEHICLE_HEIGHT, ROAD_VEHICLE_MAX_WIDTH);
 		float height = std::clamp(-*top - (length + width) / 2, 2.0f, 40.0f);
 
 		auto [hx, hy] = HEADINGS[v->direction];
@@ -3161,7 +3295,7 @@ void Renderer::AddVehicles(VehicleID own)
 		pl.origin = {static_cast<float>(v->x_pos), static_cast<float>(v->y_pos), static_cast<float>(v->z_pos)};
 		pl.cos = std::cos(angle);
 		pl.sin = std::sin(angle);
-		pl.height_scale = BUILDING_HEIGHT;
+		pl.height_scale = v->type == VEH_ROAD ? ROAD_VEHICLE_HEIGHT : BUILDING_HEIGHT;
 
 		/* Leave out the vehicle the camera is on. */
 		Vec3 d = this->cam.pos - pl.origin;
@@ -3169,7 +3303,9 @@ void Renderer::AddVehicles(VehicleID own)
 		float across = -d.x * pl.sin + d.y * pl.cos;
 		if (std::abs(along) <= length / 2 + 1 && std::abs(across) <= width / 2 + 1) continue;
 
-		this->AddSpriteBox(tex, pl, {-length / 2, -width / 2, 0}, {length / 2, width / 2, height}, false, true);
+		/* Road vehicles are often seen from right behind, where cutting out the transparent parts of the picture of
+		 * their ends left holes between their roofs and their backs; their boxes are solid. */
+		this->AddSpriteBox(tex, pl, {-length / 2, -width / 2, 0}, {length / 2, width / 2, height}, false, true, v->type != VEH_ROAD);
 	}
 }
 
@@ -3274,6 +3410,236 @@ void Renderer::AddTrack(TileIndex tile, TrackBits tracks, const std::array<float
 				at(ax + px * hw, ay + py * hw, 0.18f),
 			}, rail_colour, 1.001f);
 		}
+	}
+}
+
+/**
+ * Add what makes a road three dimensional: the raised pavements of town roads with their kerbs,
+ * the line in the middle drawn sharp, and the rails of tram track.
+ * @param tile The tile.
+ * @param look What to draw, see #GetRoadLook.
+ * @param tex The texture of the ground of the tile, which the pavements are dressed in.
+ * @param raw_z Height of the tile as the viewport uses it, see #GetTilePixelSlope.
+ * @param corner_z Height of the corners of the surface the road lies on.
+ * @param split_we How the tile is split into triangles, see #SurfaceZ.
+ * @param dist Distance of the tile from the camera.
+ */
+void Renderer::AddRoad(TileIndex tile, const RoadLook &look, const GroundTexture &tex, int raw_z, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist)
+{
+	if (dist > RAIL_DIST) return;
+
+	using Point2 = std::pair<float, float>;
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	auto at = [&](Point2 p, float lift) {
+		return Vec3{x0 + p.first, y0 + p.second, SurfaceZ(corner_z, split_we, std::clamp(p.first, 0.0f, TILE), std::clamp(p.second, 0.0f, TILE)) + lift};
+	};
+	/* A strip of a flat colour along a line on the road, from a to b, half_width to both sides of it. */
+	auto strip = [&](Point2 a, Point2 b, float half_width, float lift, const RGB &colour, float bias) {
+		const float len = std::hypot(b.first - a.first, b.second - a.second);
+		if (len <= 0) return;
+		const float px = -(b.second - a.second) / len * half_width, py = (b.first - a.first) / len * half_width;
+		this->AddFlatQuad({
+			at({a.first - px, a.second - py}, lift), at({b.first - px, b.second - py}, lift),
+			at({b.first + px, b.second + py}, lift), at({a.first + px, a.second + py}, lift),
+		}, colour, bias);
+	};
+	/* The corner the pieces of a curve go around, and the directions into the tile from it. */
+	auto curve_corner = [](RoadBits bits) {
+		const float cx = (bits & ROAD_NE) != ROAD_NONE ? 0.0f : TILE;
+		const float cy = (bits & ROAD_NW) != ROAD_NONE ? 0.0f : TILE;
+		return std::tuple<float, float, float, float>{cx, cy, cx == 0 ? 1.0f : -1.0f, cy == 0 ? 1.0f : -1.0f};
+	};
+	/* A point of the arc around the corner of a curve, from the side along x at t = 0 to the side along y at t = pi / 2. */
+	auto arc = [](const std::tuple<float, float, float, float> &corner, float r, float t) {
+		const auto [cx, cy, ux, uy] = corner;
+		return Point2{cx + ux * r * std::cos(t), cy + uy * r * std::sin(t)};
+	};
+	constexpr float QUARTER = static_cast<float>(M_PI) / 2;
+	const float fade = std::clamp((dist - RAIL_FADE_START) / (RAIL_DIST - RAIL_FADE_START), 0.0f, 1.0f);
+
+	if (look.pavement) {
+		/* The pavements are the ground of the tile raised by the height of the kerb, so they keep their picture. */
+		Vec3 normal = (at({TILE, 0}, 0) - at({0, 0}, 0)).Cross(at({0, TILE}, 0) - at({0, 0}, 0));
+		if (normal.z < 0) normal = normal * -1;
+		const Paint paint = {&tex, {}, Shade(normal), 0, 1.0f};
+		auto vertex = [&](Point2 p) {
+			const Vec3 w = at(p, KERB_HEIGHT);
+			ClipVertex v;
+			v.c = this->cam.ToCamera(w);
+			v.a = {2.0f * (p.second - p.first), p.first + p.second - (w.z - KERB_HEIGHT - raw_z), w.x, w.y};
+			return v;
+		};
+		/* A pavement around its first corner, from which all of its edges can be seen. */
+		auto pave = [&](std::span<const Point2> poly) {
+			const ClipVertex first = vertex(poly[0]);
+			ClipVertex prev = vertex(poly[1]);
+			for (size_t i = 2; i < poly.size(); i++) {
+				ClipVertex next = vertex(poly[i]);
+				this->AddTriangle({first, prev, next}, paint);
+				prev = next;
+			}
+		};
+		/* The side of a pavement, at the roadway or at the side of the tile. */
+		auto kerb = [&](Point2 a, Point2 b) {
+			this->AddFlatQuad({at(a, 0), at(b, 0), at(b, KERB_HEIGHT), at(a, KERB_HEIGHT)}, KERB_COLOUR, 1.0f);
+		};
+
+		if (IsRoadCurve(look.road)) {
+			/* The roadway goes around a corner: a small pavement in that corner, and a large one around the outside. */
+			const auto corner = curve_corner(look.road);
+			const auto [cx, cy, ux, uy] = corner;
+			std::array<Point2, ROAD_ARC_SEGMENTS + 2> inner;
+			std::array<Point2, ROAD_ARC_SEGMENTS + 4> outer;
+			inner[0] = {cx, cy};
+			outer[0] = {TILE - cx, TILE - cy};
+			outer[1] = {TILE - cx, cy};
+			for (int i = 0; i <= ROAD_ARC_SEGMENTS; i++) {
+				const float t = QUARTER * i / ROAD_ARC_SEGMENTS;
+				inner[i + 1] = arc(corner, PAVEMENT_WIDTH, t);
+				outer[i + 2] = arc(corner, TILE - PAVEMENT_WIDTH, t);
+			}
+			outer.back() = {cx, TILE - cy};
+			pave(inner);
+			pave(outer);
+			for (int i = 0; i < ROAD_ARC_SEGMENTS; i++) {
+				kerb(inner[i + 1], inner[i + 2]);
+				kerb(outer[i + 2], outer[i + 3]);
+			}
+			kerb(inner[0], inner[1]);
+			kerb(inner[0], inner.back());
+			kerb(outer[1], outer[2]);
+			kerb(outer[outer.size() - 2], outer.back());
+			kerb(outer.back(), outer[0]);
+			kerb(outer[0], outer[1]);
+		} else {
+			/* The tile in three by three parts: the roadway in the middle and out to the sides with road, pavements elsewhere. */
+			const std::array<float, 4> edges = {0, PAVEMENT_WIDTH, TILE - PAVEMENT_WIDTH, TILE};
+			auto roadway = [&](int i, int j) {
+				if (i == 1 && j == 1) return true;
+				if (i == 1) return (look.road & (j == 0 ? ROAD_NW : ROAD_SE)) != ROAD_NONE;
+				if (j == 1) return (look.road & (i == 0 ? ROAD_NE : ROAD_SW)) != ROAD_NONE;
+				return false;
+			};
+			for (int i = 0; i < 3; i++) {
+				for (int j = 0; j < 3; j++) {
+					if (roadway(i, j)) continue;
+					const std::array<Point2, 4> cell = {{{edges[i], edges[j]}, {edges[i + 1], edges[j]}, {edges[i + 1], edges[j + 1]}, {edges[i], edges[j + 1]}}};
+					pave(cell);
+					/* Its sides towards the roadway, and those at the sides of the tile. */
+					const std::array<std::pair<int, int>, 4> next = {{{i, j - 1}, {i + 1, j}, {i, j + 1}, {i - 1, j}}};
+					for (int k = 0; k < 4; k++) {
+						const auto [ni, nj] = next[k];
+						const bool outside = ni < 0 || nj < 0 || ni > 2 || nj > 2;
+						if (outside || roadway(ni, nj)) kerb(cell[k], cell[(k + 1) % 4]);
+					}
+				}
+			}
+		}
+	}
+
+	if (look.line) {
+		const RGB colour = ROAD_LINE_COLOUR * (1 - fade) + ROAD_LINE_FAR_COLOUR * fade;
+		const float half = ROAD_LINE_LENGTH / 2;
+		if (IsRoadCurve(look.road)) {
+			/* Three dashes along the arc through the middle of the roadway, as the graphics paint them. */
+			const auto corner = curve_corner(look.road);
+			const float r = TILE / 2;
+			const float length = r * QUARTER;
+			for (float s : {2.0f, length / 2, length - 2.0f}) {
+				const float t0 = (s - half) / r, t1 = (s + half) / r;
+				const Point2 a0 = arc(corner, r - ROAD_LINE_WIDTH / 2, t0), a1 = arc(corner, r - ROAD_LINE_WIDTH / 2, t1);
+				const Point2 b0 = arc(corner, r + ROAD_LINE_WIDTH / 2, t0), b1 = arc(corner, r + ROAD_LINE_WIDTH / 2, t1);
+				this->AddFlatQuad({at(a0, 0.03f), at(a1, 0.03f), at(b1, 0.03f), at(b0, 0.03f)}, colour, 1.0005f);
+			}
+		} else {
+			const bool x = look.road == ROAD_X;
+			for (float s = ROAD_LINE_SPACING / 2; s < TILE; s += ROAD_LINE_SPACING) {
+				const Point2 a = x ? Point2{s - half, TILE / 2} : Point2{TILE / 2, s - half};
+				const Point2 b = x ? Point2{s + half, TILE / 2} : Point2{TILE / 2, s + half};
+				strip(a, b, ROAD_LINE_WIDTH / 2, 0.03f, colour, 1.0005f);
+			}
+		}
+	}
+
+	if (look.tram != ROAD_NONE) {
+		/* A single track in the middle of the road; curves follow the arc of the road. */
+		std::vector<std::vector<Point2>> lines;
+		if (IsRoadCurve(look.tram)) {
+			const auto corner = curve_corner(look.tram);
+			std::vector<Point2> &line = lines.emplace_back();
+			for (int i = 0; i <= ROAD_ARC_SEGMENTS; i++) line.push_back(arc(corner, TILE / 2, QUARTER * i / ROAD_ARC_SEGMENTS));
+		} else {
+			const float m = TILE / 2;
+			if ((look.tram & ROAD_X) == ROAD_X) {
+				lines.push_back({{0, m}, {TILE, m}});
+			} else if ((look.tram & ROAD_X) != ROAD_NONE) {
+				lines.push_back({{(look.tram & ROAD_NE) != ROAD_NONE ? 0 : TILE, m}, {m, m}});
+			}
+			if ((look.tram & ROAD_Y) == ROAD_Y) {
+				lines.push_back({{m, 0}, {m, TILE}});
+			} else if ((look.tram & ROAD_Y) != ROAD_NONE) {
+				lines.push_back({{m, (look.tram & ROAD_NW) != ROAD_NONE ? 0 : TILE}, {m, m}});
+			}
+		}
+		const RGB colour = TRAM_RAIL_COLOUR * (1 - fade) + ROAD_LINE_FAR_COLOUR * fade;
+		for (const std::vector<Point2> &line : lines) {
+			for (size_t i = 0; i + 1 < line.size(); i++) {
+				const auto [ax, ay] = line[i];
+				const auto [bx, by] = line[i + 1];
+				const float len = std::hypot(bx - ax, by - ay);
+				/* Along and across the piece; the rails reach a bit beyond it, so there are no gaps in bends. */
+				const float ux = (bx - ax) / len, uy = (by - ay) / len;
+				const float ext = TRAM_RAIL_WIDTH / 2;
+				for (float side : {-RAIL_GAUGE / 2, RAIL_GAUGE / 2}) {
+					strip({ax - ux * ext - uy * side, ay - uy * ext + ux * side}, {bx + ux * ext - uy * side, by + uy * ext + ux * side}, TRAM_RAIL_WIDTH / 2, 0.04f, colour, 1.001f);
+				}
+			}
+		}
+	}
+}
+
+/**
+ * Add the shelters of a drive-through road stop on the pavements at both sides of the road: a bus shelter
+ * with a glass roof and back wall, posts and a bench; or a small brick booth for lorries. Next to each
+ * stands a post with a sign in the colour of the company.
+ * @param tile The road stop.
+ * @param corner_z Height of the corners of the surface the road lies on.
+ * @param split_we How the tile is split into triangles, see #SurfaceZ.
+ */
+void Renderer::AddRoadStop(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we)
+{
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	const float z = SurfaceZ(corner_z, split_we, TILE / 2, TILE / 2) + KERB_HEIGHT;
+	const Axis axis = GetDriveThroughStopAxis(tile);
+	const bool bus = IsBusStop(tile);
+	const Colour &cc = _cur_palette.palette[GetColourGradient(_company_colours[GetTileOwner(tile)], SHADE_NORMAL).p];
+	const RGB sign = {static_cast<float>(cc.r), static_cast<float>(cc.g), static_cast<float>(cc.b)};
+
+	for (int side = 0; side < 2; side++) {
+		/* A box from along a0 to a1, from c0 to c1 away from the side of the tile, and from h0 to h1 above the pavement. */
+		auto box = [&](float a0, float a1, float c0, float c1, float h0, float h1, const RGB &colour) {
+			if (side == 1) std::tie(c0, c1) = std::pair(TILE - c1, TILE - c0);
+			const Vec3 lo = axis == AXIS_X ? Vec3{x0 + a0, y0 + c0, z + h0} : Vec3{x0 + c0, y0 + a0, z + h0};
+			const Vec3 hi = axis == AXIS_X ? Vec3{x0 + a1, y0 + c1, z + h1} : Vec3{x0 + c1, y0 + a1, z + h1};
+			this->AddFlatBox(lo, hi, colour);
+		};
+		if (bus) {
+			box(3.4f, 12.6f, 0.3f, 0.5f, 0.5f, 3.4f, SHELTER_GLASS_COLOUR); // back wall
+			box(3.0f, 13.0f, 0.2f, 2.8f, 3.5f, 3.7f, SHELTER_GLASS_COLOUR); // roof
+			for (float a : {3.2f, 12.6f}) {
+				for (float c : {0.3f, 2.4f}) box(a, a + 0.2f, c, c + 0.2f, 0.0f, 3.5f, SHELTER_FRAME_COLOUR);
+			}
+			box(5.0f, 11.0f, 0.6f, 1.3f, 0.0f, 0.6f, SHELTER_BENCH_COLOUR);
+		} else {
+			box(3.0f, 8.0f, 0.3f, 2.6f, 0.0f, 3.0f, BOOTH_COLOUR);
+			box(2.8f, 8.2f, 0.1f, 2.8f, 3.0f, 3.3f, SHELTER_GLASS_COLOUR);
+		}
+		/* The post with the sign, at the end where the vehicles stop. */
+		const float a = side == 0 ? 14.2f : 1.6f;
+		box(a, a + 0.15f, 2.3f, 2.45f, 0.0f, 4.2f, SHELTER_FRAME_COLOUR);
+		box(a - 0.35f, a + 0.5f, 2.3f, 2.45f, 3.4f, 4.3f, sign);
 	}
 }
 
