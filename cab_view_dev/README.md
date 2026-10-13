@@ -239,6 +239,13 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - Uložené hry na zkoušku: `kabina3d_lod.sav` (kanál s komorami, lodě #1 a #2 společnosti „Cab Test Rail“)
   a `kabina3d_more.sav` (moře, loď #1).
 
+### Doladění vzhledu (13. 10.)
+
+- **Základy** (boky dlaždic zvednutých na svahu, hlavně pod domy v kopcovitých městech) jsou kamenné zdi
+  (`AddFoundationSide`, `MakeMasonryTexture`): řady kamenů jednotku vysoké a 2–3 dlouhé na vazbu, s maltou mezi nimi.
+  Textura je široká jako dlaždice a řady začínají ve výškách po 16 jednotkách, takže kameny sousedních dlaždic
+  navazují. Dřív byly boky jednolitě hnědé a z ulice vypadaly jako hliněné stěny.
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt

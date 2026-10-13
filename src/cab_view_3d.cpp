@@ -177,7 +177,9 @@ constexpr RGB HAZE = {156, 204, 220}; ///< Colour of the haze, and of the sky at
 constexpr RGB RAIL_COLOUR = {200, 200, 200}; ///< Colour of the rails.
 constexpr RGB RAIL_FAR_COLOUR = {104, 92, 80}; ///< Colour of far away rails, about that of the ballast under them.
 constexpr RGB SLEEPER_COLOUR = {72, 44, 4}; ///< Colour of the sleepers.
-constexpr RGB FOUNDATION_COLOUR = {132, 112, 88}; ///< Colour of the sides of foundations.
+constexpr RGB FOUNDATION_COLOUR = {132, 112, 88}; ///< Colour of bridge ramps that have no sprites to dress them in.
+constexpr RGB MASONRY_COLOUR = {150, 142, 128}; ///< Colour of the stones of the walls around foundations.
+constexpr RGB MORTAR_COLOUR = {96, 90, 82}; ///< Colour of the mortar between the stones of the walls around foundations.
 constexpr RGB CROSSING_CROSS_COLOUR = {236, 232, 224}; ///< Colour of the cross on the posts of a level crossing.
 constexpr RGB SIGNAL_POST_COLOUR = {96, 96, 100}; ///< Colour of the post of a signal.
 constexpr RGB SIGNAL_HEAD_COLOUR = {30, 30, 32}; ///< Colour of the head of a signal.
@@ -528,6 +530,7 @@ struct ScreenTriangle {
 };
 
 struct RoadLook;
+static GroundTexture MakeMasonryTexture();
 
 /** The renderer, with its buffers and caches. */
 class Renderer {
@@ -580,6 +583,7 @@ private:
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
 	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
+	const GroundTexture masonry = MakeMasonryTexture(); ///< Texture of the walls around foundations.
 
 	const RawSprite &GetRawSprite(SpriteID sprite);
 	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
@@ -599,6 +603,7 @@ private:
 	float GetLockWater(TileIndex tile, int lower);
 	void AddLock(TileIndex tile, const std::array<float, CORNER_END> &corner_z, float water);
 	void AddBanks(TileIndex tile, const std::array<float, CORNER_END> &land_z, const std::array<float, CORNER_END> &water_z);
+	void AddFoundationSide(const Vec3 &a, const Vec3 &b, float ga, float gb);
 	void Rasterise(int stripe, int stripes);
 
 	void DrawSky();
@@ -816,6 +821,55 @@ static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int pass
 	if (smooth.first != 0 || smooth.second != 0) pic = SmoothAlong(pic, smooth.first, smooth.second);
 
 	for (int level = 1; level < TEXTURE_LEVELS; level++) tex.levels[level] = tex.levels[level - 1].Halve();
+}
+
+/** Pixels of the texture of the walls around foundations per world unit. */
+constexpr int MASONRY_PIXELS = 4;
+/** How many courses of stones of the walls around foundations repeat; the rows of the texture start at a height that is a multiple of it. */
+constexpr int MASONRY_REPEAT = 2 * TILE_HEIGHT;
+
+/**
+ * Make the texture of the walls around foundations: courses of stones a unit high and two to three long, laid
+ * in a bond, with mortar between them. It is a tile wide, so the stones of the walls of neighbouring tiles meet.
+ * Before, the walls were of a flat brown, which in hilly towns looked like bare walls of earth.
+ * @return The texture; column 0 is at the north or the east end of the side of a tile, row 0 at a height that is
+ *         a multiple of #MASONRY_REPEAT, going down; a side is at most that high.
+ */
+static GroundTexture MakeMasonryTexture()
+{
+	GroundTexture tex;
+	Picture &pic = tex.levels[0];
+	pic.width = TILE_SIZE * MASONRY_PIXELS;
+	pic.height = 2 * MASONRY_REPEAT * MASONRY_PIXELS;
+	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, MORTAR_COLOUR);
+	auto hash = [](uint32_t a, uint32_t b) { return ((a * 73856093U) ^ (b * 19349663U) ^ 0x5bd1e995U) * 2654435761U; };
+	for (int course = 0; course * MASONRY_PIXELS < pic.height; course++) {
+		const uint32_t seed = course % MASONRY_REPEAT;
+		/* The joints between the stones of a course, at whole pixels; the pattern repeats along the wall. */
+		std::vector<int> joints;
+		int x = static_cast<int>(hash(seed, 7) % (3 * MASONRY_PIXELS));
+		while (x < pic.width) {
+			joints.push_back(x);
+			x += 2 * MASONRY_PIXELS + static_cast<int>(hash(seed, x) % (MASONRY_PIXELS + 1));
+		}
+		if (joints.empty() || pic.width - joints.back() < MASONRY_PIXELS) joints.back() = pic.width;
+		for (int px = 0; px < pic.width; px++) {
+			/* The stone this pixel belongs to, counting the one across the end of the tile as the first. */
+			size_t stone = std::ranges::upper_bound(joints, px) - joints.begin();
+			if (stone == joints.size()) stone = 0;
+			const bool joint = std::ranges::binary_search(joints, px);
+			const float shade = 0.84f + (hash(seed, static_cast<uint32_t>(stone) + 101) % 1000) / 1000.0f * 0.3f;
+			for (int py = 0; py < MASONRY_PIXELS; py++) {
+				const int row = course * MASONRY_PIXELS + py;
+				if (joint || py == MASONRY_PIXELS - 1) continue;
+				/* A little lighter at the top of each stone, as the light comes from above. */
+				const float top = py == 0 ? 1.08f : 1.0f;
+				pic.pixels[static_cast<size_t>(row) * pic.width + px] = MASONRY_COLOUR * (shade * top);
+			}
+		}
+	}
+	FinishTexture(tex, std::vector<float>(pic.pixels.size(), 1.0f), 0, false);
+	return tex;
 }
 
 /**
@@ -1509,7 +1563,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 			float ga = static_cast<float>(raw_z + GetSlopePixelZInCorner(RemoveHalftileSlope(raw_slope), a));
 			float gb = static_cast<float>(raw_z + GetSlopePixelZInCorner(RemoveHalftileSlope(raw_slope), b));
 			if (corner_z[a] <= ga && corner_z[b] <= gb) continue;
-			this->AddFlatQuad({p[a], p[b], Vec3{p[b].x, p[b].y, gb}, Vec3{p[a].x, p[a].y, ga}}, FOUNDATION_COLOUR, 1.0f);
+			this->AddFoundationSide(p[a], p[b], ga, gb);
 		}
 	}
 
@@ -1680,6 +1734,36 @@ void Renderer::AddLock(TileIndex tile, const std::array<float, CORNER_END> &land
 		/* The lower gates, holding back the water in the chamber. */
 		gates(down_a, bottom - 0.5f, water + 1);
 	}
+}
+
+/**
+ * Add a side of a foundation: a wall of stones from its top down to the ground around it, see #MakeMasonryTexture.
+ * @param a One end of the top of the side.
+ * @param b The other end of the top of the side, along the edge of the tile.
+ * @param ga Height of the ground below \a a.
+ * @param gb Height of the ground below \a b.
+ */
+void Renderer::AddFoundationSide(const Vec3 &a, const Vec3 &b, float ga, float gb)
+{
+	const std::array<Vec3, 4> world = {a, b, Vec3{b.x, b.y, gb}, Vec3{a.x, a.y, ga}};
+	Vec3 n = (world[1] - world[0]).Cross(world[3] - world[0]);
+	if (n.Dot(n) == 0) n = (world[2] - world[1]).Cross(world[0] - world[1]);
+	if (n.Dot(n) == 0) return;
+	n = n.Normalised();
+
+	/* Columns run along the edge of the tile, from its north or east end so the stones of neighbours meet. */
+	const bool along_x = a.y == b.y;
+	const float tile_start = std::floor(std::min(along_x ? a.x : a.y, along_x ? b.x : b.y) / TILE) * TILE;
+	const float top = std::ceil(std::max(a.z, b.z) / MASONRY_REPEAT) * MASONRY_REPEAT;
+	std::array<ClipVertex, 4> v;
+	for (size_t i = 0; i < world.size(); i++) {
+		const float along = (along_x ? world[i].x : world[i].y) - tile_start;
+		v[i].c = this->cam.ToCamera(world[i]);
+		v[i].a = {along * MASONRY_PIXELS, (top - world[i].z) * MASONRY_PIXELS, along, world[i].z};
+	}
+	const Paint paint = {&this->masonry, {}, Shade(n), 0, 1.0f};
+	this->AddTriangle({v[0], v[1], v[2]}, paint);
+	this->AddTriangle({v[0], v[2], v[3]}, paint);
 }
 
 /**
