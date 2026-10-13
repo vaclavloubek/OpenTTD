@@ -99,6 +99,8 @@ constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles i
 constexpr float ROAD_VEHICLE_HEIGHT = 1.6f; ///< Heights and widths of road vehicles in the 3D view, compared to those in their sprites; seen from the cab of a bus, the roof of another bus is above the eye.
 constexpr float ROAD_VEHICLE_MAX_WIDTH = 4.0f; ///< Widest a road vehicle is drawn in the 3D view, so it stays in its lane.
 constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
+constexpr SpriteID ROADSIDE_TREE_SPRITE = 0x1212; ///< Sprite of the trees along town roads, see table/road_land.h.
+constexpr float ROADSIDE_TREE_SCALE = 0.65f; ///< Size of the trees along town roads compared to other cut-outs.
 constexpr float ISO_UNITS = 0.3536f; ///< Width of a sprite pixel across the view, in world units; the isometric view draws a unit as 2 * sqrt(2) pixels.
 constexpr float MIN_ROOF_HEIGHT = 3.0f; ///< A building is given a roof when its sprite reaches at least this much above its walls.
 constexpr float SIGNAL_HEIGHT = 6.0f; ///< Height of the top of a signal above the track.
@@ -177,7 +179,9 @@ constexpr RGB HAZE = {156, 204, 220}; ///< Colour of the haze, and of the sky at
 constexpr RGB RAIL_COLOUR = {200, 200, 200}; ///< Colour of the rails.
 constexpr RGB RAIL_FAR_COLOUR = {104, 92, 80}; ///< Colour of far away rails, about that of the ballast under them.
 constexpr RGB SLEEPER_COLOUR = {72, 44, 4}; ///< Colour of the sleepers.
-constexpr RGB FOUNDATION_COLOUR = {132, 112, 88}; ///< Colour of the sides of foundations.
+constexpr RGB FOUNDATION_COLOUR = {132, 112, 88}; ///< Colour of bridge ramps that have no sprites to dress them in.
+constexpr RGB MASONRY_COLOUR = {150, 142, 128}; ///< Colour of the stones of the walls around foundations.
+constexpr RGB MORTAR_COLOUR = {96, 90, 82}; ///< Colour of the mortar between the stones of the walls around foundations.
 constexpr RGB CROSSING_CROSS_COLOUR = {236, 232, 224}; ///< Colour of the cross on the posts of a level crossing.
 constexpr RGB SIGNAL_POST_COLOUR = {96, 96, 100}; ///< Colour of the post of a signal.
 constexpr RGB SIGNAL_HEAD_COLOUR = {30, 30, 32}; ///< Colour of the head of a signal.
@@ -210,6 +214,8 @@ constexpr RGB AQUEDUCT_COLOUR = {178, 174, 166}; ///< Colour of the stone of aqu
 constexpr RGB BANK_COLOUR = {120, 112, 100}; ///< Colour of the banks of canals, rivers and the sea, between the water and the land.
 constexpr RGB LOCK_COLOUR = {150, 146, 138}; ///< Colour of the stone walls of locks.
 constexpr RGB LOCK_GATE_COLOUR = {70, 52, 36}; ///< Colour of the wooden gates of locks.
+constexpr RGB CASCADE_FOAM_COLOUR = {222, 232, 238}; ///< Colour of the white water falling over the steps of a river going down a slope.
+constexpr RGB CASCADE_WATER_COLOUR = {70, 104, 150}; ///< Colour of the clear water falling over the steps of a river going down a slope.
 constexpr RGB LOCK_GATE_GAP_COLOUR = {28, 22, 16}; ///< Colour of the seam between the leaves of a gate of a lock.
 
 /** A vector in world coordinates. */
@@ -528,6 +534,8 @@ struct ScreenTriangle {
 };
 
 struct RoadLook;
+static GroundTexture MakeMasonryTexture();
+static GroundTexture MakeCascadeTexture();
 
 /** The renderer, with its buffers and caches. */
 class Renderer {
@@ -580,6 +588,8 @@ private:
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
 	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
+	const GroundTexture masonry = MakeMasonryTexture(); ///< Texture of the walls around foundations.
+	const GroundTexture cascade = MakeCascadeTexture(); ///< Texture of the water falling over the steps of a river going down a slope.
 
 	const RawSprite &GetRawSprite(SpriteID sprite);
 	const GroundTexture &GetGroundTexture(TileIndex tile, int tile_z, bool boxes, std::pair<float, float> smooth);
@@ -599,6 +609,8 @@ private:
 	float GetLockWater(TileIndex tile, int lower);
 	void AddLock(TileIndex tile, const std::array<float, CORNER_END> &corner_z, float water);
 	void AddBanks(TileIndex tile, const std::array<float, CORNER_END> &land_z, const std::array<float, CORNER_END> &water_z);
+	void AddFoundationSide(const Vec3 &a, const Vec3 &b, float ga, float gb);
+	void AddCascade(TileIndex tile, const GroundTexture &tex, int raw_z, const std::array<float, CORNER_END> &land_z, const std::array<float, CORNER_END> &water_z, bool split_we);
 	void Rasterise(int stripe, int stripes);
 
 	void DrawSky();
@@ -618,7 +630,7 @@ private:
 	const BuildingShape &GetBuildingShape(const BoxSpriteToDraw &box, bool station);
 	void AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station);
 	void AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_col, float foot_row, float scale_h, float scale_v);
-	void AddBillboard(const BoxSpriteToDraw &box);
+	void AddBillboard(const BoxSpriteToDraw &box, float scale = 1.0f);
 	bool AddSignal(TileIndex tile, const BoxSpriteToDraw &box);
 	void AddCrossing(TileIndex tile, int z);
 	const std::optional<FenceFit> &GetFenceFit(SpriteID image, PaletteID pal, Axis axis, float climb);
@@ -816,6 +828,91 @@ static void FinishTexture(GroundTexture &tex, std::vector<float> alpha, int pass
 	if (smooth.first != 0 || smooth.second != 0) pic = SmoothAlong(pic, smooth.first, smooth.second);
 
 	for (int level = 1; level < TEXTURE_LEVELS; level++) tex.levels[level] = tex.levels[level - 1].Halve();
+}
+
+/** Pixels of the texture of the walls around foundations per world unit. */
+constexpr int MASONRY_PIXELS = 4;
+/** How many courses of stones of the walls around foundations repeat; the rows of the texture start at a height that is a multiple of it. */
+constexpr int MASONRY_REPEAT = 2 * TILE_HEIGHT;
+
+/**
+ * Make the texture of the walls around foundations: courses of stones a unit high and two to three long, laid
+ * in a bond, with mortar between them. It is a tile wide, so the stones of the walls of neighbouring tiles meet.
+ * Before, the walls were of a flat brown, which in hilly towns looked like bare walls of earth.
+ * @return The texture; column 0 is at the north or the east end of the side of a tile, row 0 at a height that is
+ *         a multiple of #MASONRY_REPEAT, going down; a side is at most that high.
+ */
+static GroundTexture MakeMasonryTexture()
+{
+	GroundTexture tex;
+	Picture &pic = tex.levels[0];
+	pic.width = TILE_SIZE * MASONRY_PIXELS;
+	pic.height = 2 * MASONRY_REPEAT * MASONRY_PIXELS;
+	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, MORTAR_COLOUR);
+	auto hash = [](uint32_t a, uint32_t b) { return ((a * 73856093U) ^ (b * 19349663U) ^ 0x5bd1e995U) * 2654435761U; };
+	for (int course = 0; course * MASONRY_PIXELS < pic.height; course++) {
+		const uint32_t seed = course % MASONRY_REPEAT;
+		/* The joints between the stones of a course, at whole pixels; the pattern repeats along the wall. */
+		std::vector<int> joints;
+		int x = static_cast<int>(hash(seed, 7) % (3 * MASONRY_PIXELS));
+		while (x < pic.width) {
+			joints.push_back(x);
+			x += 2 * MASONRY_PIXELS + static_cast<int>(hash(seed, x) % (MASONRY_PIXELS + 1));
+		}
+		if (joints.empty() || pic.width - joints.back() < MASONRY_PIXELS) joints.back() = pic.width;
+		for (int px = 0; px < pic.width; px++) {
+			/* The stone this pixel belongs to, counting the one across the end of the tile as the first. */
+			size_t stone = std::ranges::upper_bound(joints, px) - joints.begin();
+			if (stone == joints.size()) stone = 0;
+			const bool joint = std::ranges::binary_search(joints, px);
+			const float shade = 0.84f + (hash(seed, static_cast<uint32_t>(stone) + 101) % 1000) / 1000.0f * 0.3f;
+			for (int py = 0; py < MASONRY_PIXELS; py++) {
+				const int row = course * MASONRY_PIXELS + py;
+				if (joint || py == MASONRY_PIXELS - 1) continue;
+				/* A little lighter at the top of each stone, as the light comes from above. */
+				const float top = py == 0 ? 1.08f : 1.0f;
+				pic.pixels[static_cast<size_t>(row) * pic.width + px] = MASONRY_COLOUR * (shade * top);
+			}
+		}
+	}
+	FinishTexture(tex, std::vector<float>(pic.pixels.size(), 1.0f), 0, false);
+	return tex;
+}
+
+/** Pixels of the texture of falling water per world unit along the fall. */
+constexpr int CASCADE_PIXELS = 4;
+/** Rows of the texture of falling water, from the top of a fall to its foot. */
+constexpr int CASCADE_ROWS = 16;
+
+/**
+ * Make the texture of the water falling over the steps of a river going down a slope, see Renderer::AddCascade:
+ * streaks of white and clear water, white where it curls over the edge and where it splashes at the foot.
+ * It is a tile wide, so the falls of neighbouring tiles meet.
+ * @return The texture; column 0 is at the north or the east end of the fall, row 0 at its top.
+ */
+static GroundTexture MakeCascadeTexture()
+{
+	GroundTexture tex;
+	Picture &pic = tex.levels[0];
+	pic.width = TILE_SIZE * CASCADE_PIXELS;
+	pic.height = CASCADE_ROWS;
+	pic.pixels.resize(static_cast<size_t>(pic.width) * pic.height);
+	auto noise = [](uint32_t a, uint32_t b) { return ((((a * 73856093U) ^ (b * 19349663U) ^ 0x5bd1e995U) * 2654435761U) >> 8) % 1000 / 1000.0f; };
+	for (int x = 0; x < pic.width; x++) {
+		/* How white the streak of this column is, a little smoothed so streaks are a few pixels wide. */
+		float streak = 0;
+		for (int dx = -2; dx <= 2; dx++) streak += noise((x + dx + pic.width) % pic.width, 1) / 5;
+		for (int y = 0; y < pic.height; y++) {
+			const float f = (y + 0.5f) / pic.height;
+			float white = 0.3f + 2.2f * (streak - 0.5f) + 0.1f * noise(x, y / 4 + 7);
+			if (f < 0.2f) white += (0.2f - f) * 3.0f;
+			if (f > 0.65f) white += (f - 0.65f) * 2.4f;
+			white = std::clamp(white, 0.0f, 1.0f);
+			pic.pixels[static_cast<size_t>(y) * pic.width + x] = CASCADE_WATER_COLOUR * (1 - white) + CASCADE_FOAM_COLOUR * white;
+		}
+	}
+	FinishTexture(tex, std::vector<float>(pic.pixels.size(), 1.0f), 0, false);
+	return tex;
 }
 
 /**
@@ -1494,7 +1591,11 @@ void Renderer::AddTile(TileIndex tile, float dist)
 		if (normal.z < 0) normal = normal * -1;
 		this->AddTriangle({v[a], v[b], v[c]}, {&tex, {}, Shade(normal), 0, 1.0f});
 	};
-	if (split_we) {
+	/* A river going down a slope goes down in steps, see AddCascade. */
+	const bool cascade = drop != 0 && IsTileType(tile, MP_WATER) && IsInclinedSlope(raw_slope);
+	if (cascade) {
+		this->AddCascade(tile, tex, raw_z, land_z, corner_z, split_we);
+	} else if (split_we) {
 		ground(CORNER_N, CORNER_W, CORNER_E);
 		ground(CORNER_S, CORNER_E, CORNER_W);
 	} else {
@@ -1509,7 +1610,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 			float ga = static_cast<float>(raw_z + GetSlopePixelZInCorner(RemoveHalftileSlope(raw_slope), a));
 			float gb = static_cast<float>(raw_z + GetSlopePixelZInCorner(RemoveHalftileSlope(raw_slope), b));
 			if (corner_z[a] <= ga && corner_z[b] <= gb) continue;
-			this->AddFlatQuad({p[a], p[b], Vec3{p[b].x, p[b].y, gb}, Vec3{p[a].x, p[a].y, ga}}, FOUNDATION_COLOUR, 1.0f);
+			this->AddFoundationSide(p[a], p[b], ga, gb);
 		}
 	}
 
@@ -1517,7 +1618,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	if (road_bits != ROAD_NONE) this->AddRoad(tile, road, tex, raw_z, corner_z, split_we, dist);
 	if (boxes && road.stop) this->AddRoadStop(tile, corner_z, split_we);
 	if (lock) this->AddLock(tile, land_z, lock_water);
-	if (drop != 0 || shore) this->AddBanks(tile, land_z, corner_z);
+	if ((drop != 0 || shore) && !cascade) this->AddBanks(tile, land_z, corner_z);
 	if (tunnel) this->AddTunnelPortal(tile, raw_z);
 	if (IsBridgeTile(tile)) this->AddBridgeRamp(tile, raw_z, corner_z, split_we, dist);
 	if (IsBridgeAbove(tile)) this->AddBridgeMiddle(tile, corner_z, split_we, dist);
@@ -1594,7 +1695,9 @@ void Renderer::AddTile(TileIndex tile, float dist)
 					if (std::min(box.xmax - box.xmin, box.ymax - box.ymin) == 0 && std::max(box.xmax - box.xmin, box.ymax - box.ymin) >= 8) break;
 					/* Thin things like lamps and catenary pylons stand as cut-outs. */
 					if (box.xmax - box.xmin < 2 && box.ymax - box.ymin < 2) {
-						this->AddBillboard(box);
+						/* Trees along town roads stand right by the road; at the size of other trees they filled the view. */
+						const bool roadside_tree = IsNormalRoadTile(tile) && (box.image & SPRITE_MASK) == ROADSIDE_TREE_SPRITE;
+						this->AddBillboard(box, roadside_tree ? ROADSIDE_TREE_SCALE : 1.0f);
 					} else {
 						/* Platforms, the low boxes of stations standing on the ground. */
 						const bool platform = IsTileType(tile, MP_STATION) && box.zmin <= z + 1 && box.zmax - box.zmin <= 2;
@@ -1679,6 +1782,141 @@ void Renderer::AddLock(TileIndex tile, const std::array<float, CORNER_END> &land
 	if (water > bottom + 0.25f) {
 		/* The lower gates, holding back the water in the chamber. */
 		gates(down_a, bottom - 0.5f, water + 1);
+	}
+}
+
+/**
+ * Add a side of a foundation: a wall of stones from its top down to the ground around it, see #MakeMasonryTexture.
+ * @param a One end of the top of the side.
+ * @param b The other end of the top of the side, along the edge of the tile.
+ * @param ga Height of the ground below \a a.
+ * @param gb Height of the ground below \a b.
+ */
+void Renderer::AddFoundationSide(const Vec3 &a, const Vec3 &b, float ga, float gb)
+{
+	const std::array<Vec3, 4> world = {a, b, Vec3{b.x, b.y, gb}, Vec3{a.x, a.y, ga}};
+	Vec3 n = (world[1] - world[0]).Cross(world[3] - world[0]);
+	if (n.Dot(n) == 0) n = (world[2] - world[1]).Cross(world[0] - world[1]);
+	if (n.Dot(n) == 0) return;
+	n = n.Normalised();
+
+	/* Columns run along the edge of the tile, from its north or east end so the stones of neighbours meet. */
+	const bool along_x = a.y == b.y;
+	const float tile_start = std::floor(std::min(along_x ? a.x : a.y, along_x ? b.x : b.y) / TILE) * TILE;
+	const float top = std::ceil(std::max(a.z, b.z) / MASONRY_REPEAT) * MASONRY_REPEAT;
+	std::array<ClipVertex, 4> v;
+	for (size_t i = 0; i < world.size(); i++) {
+		const float along = (along_x ? world[i].x : world[i].y) - tile_start;
+		v[i].c = this->cam.ToCamera(world[i]);
+		v[i].a = {along * MASONRY_PIXELS, (top - world[i].z) * MASONRY_PIXELS, along, world[i].z};
+	}
+	const Paint paint = {&this->masonry, {}, Shade(n), 0, 1.0f};
+	this->AddTriangle({v[0], v[1], v[2]}, paint);
+	this->AddTriangle({v[0], v[2], v[3]}, paint);
+}
+
+/** Number of steps a river goes down a slope in, see Renderer::AddCascade. */
+constexpr int CASCADE_STEPS = 4;
+
+/**
+ * Add a river going down a slope as a cascade: flat pools, each a step lower than the one above it, with white
+ * water falling over the edge of each step. Lying on the slope, the water looked like a steep ramp from a ship,
+ * most of all where a wide river flows into the sea. The lowest pool is as high as the water below the slope,
+ * the highest a step below the water above it. Banks go from the land down to the pools, see AddBanks.
+ * @param tile The tile, with an inclined slope.
+ * @param tex The texture of its ground.
+ * @param raw_z Height of the tile as the viewport uses it, see #GetTilePixelSlope.
+ * @param land_z Height of the corners of the land of the tile.
+ * @param water_z Height of the corners of the water lying on the slope, below the land.
+ * @param split_we Whether the slope is split along the line between the west and the east corner.
+ */
+void Renderer::AddCascade(TileIndex tile, const GroundTexture &tex, int raw_z, const std::array<float, CORNER_END> &land_z, const std::array<float, CORNER_END> &water_z, bool split_we)
+{
+	const DiagDirection up = GetInclinedSlopeDirection(std::get<0>(GetTilePixelSlope(tile)));
+	const float x0 = static_cast<float>(TileX(tile) * TILE_SIZE);
+	const float y0 = static_cast<float>(TileY(tile) * TILE_SIZE);
+	const float low = *std::ranges::min_element(water_z);
+	const float rise = *std::ranges::max_element(water_z) - low;
+
+	/* Where a point of the tile is from the foot of the slope (0) to its top (1). */
+	auto uphill = [&](float ox, float oy) {
+		switch (up) {
+			case DIAGDIR_NE: return 1 - ox / TILE;
+			case DIAGDIR_SE: return oy / TILE;
+			case DIAGDIR_SW: return ox / TILE;
+			default: return 1 - oy / TILE;
+		}
+	};
+	/* The point at a place from the foot of the slope (0) to its top (1), and across it (0 to 1). */
+	auto at = [&](float u, float v) {
+		switch (up) {
+			case DIAGDIR_NE: return std::pair<float, float>((1 - u) * TILE, v * TILE);
+			case DIAGDIR_SE: return std::pair<float, float>(v * TILE, u * TILE);
+			case DIAGDIR_SW: return std::pair<float, float>(u * TILE, v * TILE);
+			default: return std::pair<float, float>(v * TILE, (1 - u) * TILE);
+		}
+	};
+	auto pool = [&](int step) { return low + rise * step / CASCADE_STEPS; };
+	auto vertex = [&](float ox, float oy, float z) {
+		ClipVertex cv;
+		cv.c = this->cam.ToCamera({x0 + ox, y0 + oy, z});
+		/* The texture lies on the land, as the sprites of the ground are drawn for it. */
+		cv.a = {2.0f * (oy - ox), ox + oy - (SurfaceZ(land_z, split_we, ox, oy) - raw_z), x0 + ox, y0 + oy};
+		return cv;
+	};
+
+	const Paint water = {&tex, {}, Shade({0, 0, 1}), 0, 1.0f};
+	for (int step = 0; step < CASCADE_STEPS; step++) {
+		const float u0 = static_cast<float>(step) / CASCADE_STEPS, u1 = static_cast<float>(step + 1) / CASCADE_STEPS;
+		const float z = pool(step);
+		std::array<ClipVertex, 4> q;
+		const std::array<std::pair<float, float>, 4> corners = {at(u0, 0), at(u1, 0), at(u1, 1), at(u0, 1)};
+		for (int i = 0; i < 4; i++) q[i] = vertex(corners[i].first, corners[i].second, z);
+		this->AddTriangle({q[0], q[1], q[2]}, water);
+		this->AddTriangle({q[0], q[2], q[3]}, water);
+
+		/* The water falling from the next pool, or from the water above the slope. */
+		const float top = pool(step + 1);
+		std::array<ClipVertex, 4> f;
+		for (int i = 0; i < 4; i++) {
+			const float across = (i == 1 || i == 2) ? 1.0f : 0.0f;
+			const float fz = i < 2 ? top : z;
+			auto [fx, fy] = at(u1, across);
+			/* Columns from the north or the east end of the fall, so the falls of neighbouring tiles meet. */
+			const float along = (up == DIAGDIR_NE || up == DIAGDIR_SW) ? fy : fx;
+			f[i].c = this->cam.ToCamera({x0 + fx, y0 + fy, fz});
+			f[i].a = {along * CASCADE_PIXELS, i < 2 ? 0.0f : static_cast<float>(CASCADE_ROWS), along, fz};
+		}
+		const Paint fall = {&this->cascade, {}, 1.0f, 0, 1.0f};
+		this->AddTriangle({f[0], f[1], f[2]}, fall);
+		this->AddTriangle({f[0], f[2], f[3]}, fall);
+	}
+
+	/* Banks where the land is next to it, down to the pools. */
+	static const std::array<std::pair<Corner, Corner>, DIAGDIR_END> edges = {{{CORNER_N, CORNER_E}, {CORNER_E, CORNER_S}, {CORNER_S, CORNER_W}, {CORNER_W, CORNER_N}}};
+	for (DiagDirection dir = DIAGDIR_BEGIN; dir < DIAGDIR_END; dir++) {
+		TileIndex next = AddTileIndexDiffCWrap(tile, TileIndexDiffCByDiagDir(dir));
+		if (IsValidTile(next) && (IsLoweredWater(next) || IsLockMiddle(next) || (IsTileType(next, MP_WATER) && IsCoastTile(next)))) continue;
+		const Point a = CornerOffset(edges[dir].first), b = CornerOffset(edges[dir].second);
+		const float ua = uphill(static_cast<float>(a.x), static_cast<float>(a.y)), ub = uphill(static_cast<float>(b.x), static_cast<float>(b.y));
+		/* Pieces of the edge with the same pool below them. */
+		for (int step = 0; step < CASCADE_STEPS; step++) {
+			const float s0 = static_cast<float>(step) / CASCADE_STEPS, s1 = static_cast<float>(step + 1) / CASCADE_STEPS;
+			float t0 = 0, t1 = 1;
+			if (ua != ub) {
+				t0 = std::clamp((s0 - ua) / (ub - ua), 0.0f, 1.0f);
+				t1 = std::clamp((s1 - ua) / (ub - ua), 0.0f, 1.0f);
+				if (t0 > t1) std::swap(t0, t1);
+				if (t1 - t0 < 1e-4f) continue;
+			} else if (std::min(ua, 0.999f) < s0 || std::min(ua, 0.999f) >= s1) {
+				continue;
+			}
+			const float px0 = a.x + (b.x - a.x) * t0, py0 = a.y + (b.y - a.y) * t0;
+			const float px1 = a.x + (b.x - a.x) * t1, py1 = a.y + (b.y - a.y) * t1;
+			const float z = pool(step);
+			this->AddFlatQuad({Vec3{x0 + px0, y0 + py0, SurfaceZ(land_z, split_we, px0, py0)}, Vec3{x0 + px1, y0 + py1, SurfaceZ(land_z, split_we, px1, py1)},
+					Vec3{x0 + px1, y0 + py1, z}, Vec3{x0 + px0, y0 + py0, z}}, BANK_COLOUR, 1.0f);
+		}
 	}
 }
 
@@ -2496,14 +2734,15 @@ void Renderer::AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_
  * Add a thing standing on a tile as a cut-out facing the camera, like trees and signals.
  * The viewport draws the sprite where the thing stands.
  * @param box The sprite and its box.
+ * @param scale How much smaller or larger than other cut-outs it is, see #CUTOUT_UNITS.
  */
-void Renderer::AddBillboard(const BoxSpriteToDraw &box)
+void Renderer::AddBillboard(const BoxSpriteToDraw &box, float scale)
 {
 	float sx = static_cast<float>(box.x) / ZOOM_BASE;
 	float sy = static_cast<float>(box.y) / ZOOM_BASE;
 	float z = static_cast<float>(box.zmin);
 	Vec3 foot = {(sy + z - sx / 2) / 2, (sy + z + sx / 2) / 2, z};
-	this->AddCutout(this->GetBoxTexture(box.image, box.pal, false), foot, 0, 0, CUTOUT_UNITS, CUTOUT_UNITS);
+	this->AddCutout(this->GetBoxTexture(box.image, box.pal, false), foot, 0, 0, CUTOUT_UNITS * scale, CUTOUT_UNITS * scale);
 }
 
 /**
