@@ -40,7 +40,7 @@ Q = make_q(300)
 FREEZE_AT = 300
 FREEZE_LEN = 100
 END_RAW = 935
-HOLD = 120
+HOLD = 168
 timeline = []
 for r in range(0, FREEZE_AT + 1):
     timeline.append((r, None))
