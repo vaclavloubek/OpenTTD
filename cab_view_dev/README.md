@@ -249,6 +249,12 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - **Stromy podél městských silnic** (sprite 0x1212 v kraji silnice) jsou výřezy 0,65× menší než ostatní stromy
   (`ROADSIDE_TREE_SCALE`). Stojí hned u vozovky, a ve velikosti lesních stromů zakrývaly z autobusu půl obrazu.
 
+- **Řeka na svahu** (hlavně široké ústí řeky do moře) je stupňovitý vodopád (`AddCascade`): 4 rovné tůně, každá
+  o 2 jednotky níž, a mezi nimi svislé stěny padající vody (`MakeCascadeTexture`: pruhy bílé a průzračné vody, bílá
+  pěna nahoře u přepadu a dole u paty). Nejnižší tůň je ve výšce vody pod svahem, poslední stupeň padá z vody nad
+  ním. Břehy jdou od země dolů k tůním. Textura řeky (i peřeje) leží na tůních jako dřív na svahu. Dřív voda ležela
+  přímo na svahu (50 %) a z lodi vypadala jako strmá rampa.
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
