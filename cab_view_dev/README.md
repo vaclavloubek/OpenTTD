@@ -255,6 +255,22 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   ním. Břehy jdou od země dolů k tůním. Textura řeky (i peřeje) leží na tůních jako dřív na svahu. Dřív voda ležela
   přímo na svahu (50 %) a z lodi vypadala jako strmá rampa.
 
+### Detail země
+
+- Grafika OpenGFX má jen pár pixelů na dlaždici (tráva 64×32), takže zblízka byla zem rozmazaná a dlaždice
+  trávy se opakovaly. Barva dál pochází ze spritů, ale přes zem se klade jemný vzor materiálu, pevně spojený
+  se světem (`DetailPatterns` v `cab_view_3d.cpp`): stébla trávy, hroudy a praskliny hlíny, oblázky štěrku,
+  zrno asfaltu, vlnky písku, sníh. Navíc velké světlejší a tmavší skvrny (perioda 4 dlaždice), aby nebylo
+  vidět opakování dlaždic.
+- Materiál se pozná podle barvy pixelu textury země (`GuessMaterial`); na dlaždicích s kolejí je hnědá a tmavá
+  zem štěrk, na silnici je šedá zem asfalt, voda nemá vzor. Hranice materiálů se náhodně rozmažou, aby nebyly
+  vidět schody pixelů.
+- Vzory mají menší verze (mipmapy) a verze se volí podle toho, kolik země zabere pixel obrazovky (podle
+  vzdálenosti a sklonu pohledu na plochu), takže se vzor v dálce nemihotá. Dřívější kostičkový vzor zůstal jen
+  na stěnách a střechách.
+- Cena: v cloudu (polovičním rozlišení, 4 vlákna) vyplňování o ~2 ms (asi 30 %) pomalejší.
+- Ladění: dočasný příkaz konzole (jen v pracovním patchi, ne ve větvi) přepínal vzor a obarvení podle materiálu.
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
