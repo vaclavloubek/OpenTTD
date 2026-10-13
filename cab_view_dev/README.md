@@ -86,11 +86,21 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 
 ### 3D pohled – krok 4 (rozpracováno)
 
-- **Domy, průmysl a objekty** jsou skutečné 3D tvary: stěny do výšky okapu a valbová střecha (u čtvercových domů
-  jehlan) až k vršku spritu. Výška okapu se čte ze spritu (vršek západního a východního rohu), vršek střechy z vršku
-  spritu; každý bod stěny i střechy dostane pixel, který tam kreslí hra, takže namalovaná střecha leží na střeše.
-  Výšky jsou 0,6× výšky ve spritu (izometrie budovy převyšuje), jako v návrhu C. Nejnižší pás stěny bere obrázek
-  těsně nad ním, aby spodní hrana nebyla zubatá ze schodů pixelů.
+- **Domy, průmysl, objekty a budovy nádraží** jsou skutečné 3D tvary. Box, podle kterého hra řadí sprite, bývá
+  mnohem větší než budova, proto se tvar hledá ve spritu (`GetBuildingShape`, výsledek se pamatuje pro každý sprite):
+  1. Kvádr (u nádraží i se střechou skloněnou na jednu stranu) se přiloží k obrysu spritu tak, aby v něm bylo co
+     nejvíc neprůhledných pixelů a co nejméně průhledných – mění se vždy jedno číslo (rohy půdorysu, výška), dokud
+     to pomáhá, z několika začátků (nejnižší bod spritu jako jižní roh, nejnižší přímky spodních hran, celý box).
+  2. Výška stěn se pak čte ze svislých hran u západního a východního rohu, střecha (valbová, sedlová podél osy x
+     nebo y, nebo plochá) je ta, která nejlépe sedí na vršek spritu – jen když sedí znatelně lépe než plochá
+     (jinak jde o atiku nebo něco na střeše) a není strmější než 2,5 : 1 na polovinu rozpětí (dřív vznikaly špice).
+  3. Výřez otočený ke kameře je jen les a jiné rostliny, štíhlé věci (sila, komíny: výška > 7× užší strana pod 6)
+     a sprity, kterým žádný tvar nesedí a nad tvarem je velký kus obrázku (statek pod velkým stromem). Výřez
+     stojí na zemi uprostřed boxu, takže zadní část nevisí ve vzduchu.
+  Každý bod stěny i střechy dostane pixel, který tam kreslí hra, takže namalovaná střecha leží na střeše. Výšky
+  jsou 0,6× výšky ve spritu (izometrie budovy převyšuje), jako v návrhu C, i u budov nádraží. Nejnižší pás stěny
+  bere obrázek těsně nad ním, aby spodní hrana nebyla zubatá a aby zakryl, co pod budovou kreslí sprite země.
+  Na Linuxu trvá rozpoznání jednoho spritu kolem 1 ms (nejvýš 2 ms).
 - **Stromy a návěstidla** (a jiné tenké věci) jsou výřezy otočené ke kameře (0,28 jednotky na pixel spritu),
   bez rozšiřování neprůhledné oblasti, aby zůstaly štíhlé.
 - **Ostatní vlaky a silniční vozidla** jsou kvádry podél směru jízdy, potažené spritem vozidla jedoucího na
@@ -98,7 +108,8 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - Budovy, stromy, návěstidla a vozidla se kreslí do 32 dlaždic. Ploty polí a ploty podél kolejí se zatím
   vynechávají (na tenké kvádry se jejich sprity nepromítají dobře).
 - Testovací AI staví dvě dvojitá návěstidla na trati a vedle ní druhou rovnou trať s vlakem.
-- Zbývá: mosty a portály tunelů v detailu, silnice, zkouška na Macu.
+- Zbývá: mosty a portály tunelů v detailu, silnice. Na Macu (13. 10.) byly vidět les jako zelený kvádr, sila
+  jako šedé „šipky“ a budova nádraží jako vysoký sloup; opraveno novým rozpoznáním tvaru výše.
 
 ## Další kroky
 

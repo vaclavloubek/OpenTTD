@@ -51,6 +51,8 @@
 
 #include <chrono>
 #include <functional>
+#include <map>
+#include <tuple>
 
 #include "safeguards.h"
 
@@ -76,6 +78,7 @@ constexpr float TRACK_SMOOTH_LENGTH = 2.0f; ///< Length along straight track ove
 constexpr float BOX_DIST = 32.0f * TILE; ///< Buildings, trees, signals and vehicles are drawn up to this distance.
 constexpr float BUILDING_HEIGHT = 0.6f; ///< Heights of buildings and vehicles in the 3D view, compared to their heights in the sprites; the isometric view makes them look tall.
 constexpr float CUTOUT_UNITS = 0.28f; ///< Size of a sprite pixel of a cut-out, like a tree, in world units.
+constexpr float ISO_UNITS = 0.3536f; ///< Width of a sprite pixel across the view, in world units; the isometric view draws a unit as 2 * sqrt(2) pixels.
 constexpr float MIN_ROOF_HEIGHT = 3.0f; ///< A building is given a roof when its sprite reaches at least this much above its walls.
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
 constexpr size_t MAX_NEW_TEXTURES_TIMED = 32; ///< Pictures that make more new textures don't count for the average time of a picture.
@@ -332,6 +335,30 @@ struct Placement {
 	}
 };
 
+/** Roof of a building in the 3D view. */
+enum class RoofKind : uint8_t {
+	Flat, ///< A flat roof, or one sloping one way when the walls are not as high.
+	Hip, ///< A hip roof with its ridge along the longer side; a pyramid on a square building.
+	GableX, ///< A gable roof with its ridge along the x axis.
+	GableY, ///< A gable roof with its ridge along the y axis.
+};
+
+/** How a building looks in the 3D view, worked out from its sprite, see Renderer::GetBuildingShape. */
+struct BuildingShape {
+	bool cutout = false; ///< Whether it is a cut-out facing the camera, as it is no box (silos, a forest).
+	bool plants = false; ///< Whether it is mostly plants, like a forest; its cut-out is then the size of trees.
+	float x0 = 0; ///< Start of the footprint along the x axis, relative to the north corner of the box.
+	float y0 = 0; ///< Start of the footprint along the y axis, relative to the north corner of the box.
+	float x1 = 0; ///< End of the footprint along the x axis, relative to the north corner of the box.
+	float y1 = 0; ///< End of the footprint along the y axis, relative to the north corner of the box.
+	std::array<float, 4> walls = {}; ///< Heights of the walls at the corners (x0, y0), (x1, y0), (x1, y1) and (x0, y1), above the bottom of the box.
+	float ridge = 0; ///< Height of the ridge of the roof above the bottom of the box; no such roof when it is not above the walls.
+	RoofKind roof = RoofKind::Flat; ///< Kind of roof.
+	float band = 0; ///< Height of the lowest band of the walls, see #Renderer::AddSpriteWalls.
+	float foot_col = 0; ///< Column of the sprite at the foot of the cut-out, relative to where the sprite is drawn.
+	float foot_row = 0; ///< Row of the sprite at the foot of the cut-out, relative to where the sprite is drawn.
+};
+
 /** Camera with its projection. */
 struct Camera {
 	Vec3 pos; ///< Position of the eye.
@@ -395,6 +422,7 @@ public:
 		this->sprites.clear();
 		this->textures.clear();
 		this->box_textures.clear();
+		this->building_shapes.clear();
 		this->frame = {};
 		this->depth = {};
 		this->frame_valid = false;
@@ -419,6 +447,7 @@ private:
 	std::unordered_map<SpriteID, RawSprite> sprites; ///< Sprites loaded so far.
 	std::unordered_map<std::vector<int32_t>, GroundTexture, TextureKeyHash> textures; ///< Ground textures put together so far.
 	std::unordered_map<uint64_t, GroundTexture> box_textures; ///< Textures of sprites standing in boxes, by sprite and palette.
+	std::map<std::tuple<SpriteID, PaletteID, int, int, int, int, int, bool>, BuildingShape> building_shapes; ///< Shapes of buildings worked out so far, see #GetBuildingShape.
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
 	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
 	std::vector<int32_t> key; ///< Scratch buffer for texture keys.
@@ -439,10 +468,13 @@ private:
 	void AddTile(TileIndex tile, float dist);
 	void AddTrack(TileIndex tile, const std::array<float, CORNER_END> &corner_z, bool split_we, float dist);
 	void AddBox(const BoxSpriteToDraw &box, int ground_z, float height_scale);
-	void AddBuilding(const BoxSpriteToDraw &box, float height_scale);
+	const BuildingShape &GetBuildingShape(const BoxSpriteToDraw &box, bool station);
+	void AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station);
+	void AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_col, float foot_row, float scale_h, float scale_v);
 	void AddBillboard(const BoxSpriteToDraw &box);
 	void AddVehicles();
 	void AddSpriteFace(const GroundTexture &tex, const Placement &pl, std::span<const Vec3> pts, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &shown, bool cutout);
+	void AddSpriteWalls(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, const std::array<float, 4> &tops, float band, bool cutout);
 	void AddSpriteBox(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, bool bottom, bool top, bool cutout = true);
 	void ChooseScale(float budget_ms);
 	void Output(const Rect &r);
@@ -1073,8 +1105,16 @@ void Renderer::AddTile(TileIndex tile, float dist)
 				case MP_HOUSE:
 				case MP_INDUSTRY:
 				case MP_OBJECT:
-					if (!box.child) this->AddBuilding(box, BUILDING_HEIGHT);
+					if (!box.child) this->AddBuilding(box, BUILDING_HEIGHT, false);
 					break;
+
+				case MP_STATION:
+					/* Station buildings, standing on the ground, get their real shape; platforms and roofs stay boxes. */
+					if (!box.child && box.zmax - box.zmin >= 10 && box.zmin <= z + 1) {
+						this->AddBuilding(box, BUILDING_HEIGHT, true);
+						break;
+					}
+					[[fallthrough]];
 
 				default:
 					if (box.child) break;
@@ -1157,37 +1197,40 @@ void Renderer::AddSpriteBox(const GroundTexture &tex, const Placement &pl, const
 		this->AddSpriteFace(tex, pl, q, {0, 0, -1}, [z1](Vec3 p) { p.z = z1; return p; }, cutout);
 	}
 
-	/* The bottom edge of a side is a line of steps of pixels in the sprite, which would cut teeth into it.
-	 * The lowest band of the side gets the picture just above it, stretched down. */
-	const float band = std::min(2.0f, (z1 - z0) / 3);
-	auto wall = [&](float ax, float ay, float bx, float by, const Vec3 &normal, auto mirror) {
-		std::array<Vec3, 4> upper = {Vec3{ax, ay, z0 + band}, Vec3{bx, by, z0 + band}, Vec3{bx, by, z1}, Vec3{ax, ay, z1}};
-		this->AddSpriteFace(tex, pl, upper, normal, mirror, cutout);
-		if (band <= 0) return;
-		std::array<Vec3, 4> lower = {Vec3{ax, ay, z0}, Vec3{bx, by, z0}, Vec3{bx, by, z0 + band}, Vec3{ax, ay, z0 + band}};
-		this->AddSpriteFace(tex, pl, lower, normal, [&](Vec3 p) { p.z = z0 + band; return mirror(p); }, cutout);
-	};
-	wall(x1, y0, x1, y1, {1, 0, 0}, same);
-	wall(x0, y0, x0, y1, {-1, 0, 0}, [x1](Vec3 p) { p.x = x1; return p; });
-	wall(x0, y1, x1, y1, {0, 1, 0}, same);
-	wall(x0, y0, x1, y0, {0, -1, 0}, [y1](Vec3 p) { p.y = y1; return p; });
+	this->AddSpriteWalls(tex, pl, lo, hi, {z1, z1, z1, z1}, std::min(2.0f, (z1 - z0) / 3), cutout);
 }
 
 /**
- * Get the topmost opaque pixel of a column of a texture.
- * @param tex The texture.
- * @param col The column, relative to where the sprite is drawn.
- * @return The row of the top of that pixel, relative to where the sprite is drawn; nothing when the column is empty.
+ * Add the four walls of a thing dressed in its sprite, see #AddSpriteFace. Walls the isometric view
+ * doesn't show get the picture of the opposite wall.
+ * @param tex The texture of the sprite.
+ * @param pl Where the thing is.
+ * @param lo The lower corner of the footprint, at the bottom of the walls.
+ * @param hi The upper corner of the footprint.
+ * @param tops Heights of the tops of the walls at the corners (lo.x, lo.y), (hi.x, lo.y), (hi.x, hi.y) and (lo.x, hi.y).
+ * @param band Height of the lowest band of the walls, which gets the picture just above it, stretched down. The bottom
+ *             edge of a wall is a line of steps of pixels in the sprite, which would cut teeth into it, and often the
+ *             ground sprite draws the lowest part of a building.
+ * @param cutout Whether pixels where the sprite is transparent are left out.
  */
-static std::optional<int> TopRow(const GroundTexture &tex, float col)
+void Renderer::AddSpriteWalls(const GroundTexture &tex, const Placement &pl, const Vec3 &lo, const Vec3 &hi, const std::array<float, 4> &tops, float band, bool cutout)
 {
-	const Picture &pic = tex.levels[0];
-	int x = static_cast<int>(std::floor(col)) - tex.left;
-	if (pic.alpha.empty() || x < 0 || x >= pic.width) return std::nullopt;
-	for (int y = 0; y < pic.height; y++) {
-		if (pic.alpha[static_cast<size_t>(y) * pic.width + x] >= 0.5f) return y + tex.top;
-	}
-	return std::nullopt;
+	const float z0 = lo.z;
+	const std::array<std::pair<float, float>, 4> corners = {{{lo.x, lo.y}, {hi.x, lo.y}, {hi.x, hi.y}, {lo.x, hi.y}}};
+	auto wall = [&](int a, int b, const Vec3 &normal, const std::function<Vec3(const Vec3 &)> &mirror) {
+		const auto [ax, ay] = corners[a];
+		const auto [bx, by] = corners[b];
+		const float zb = z0 + std::clamp(band, 0.0f, 0.6f * (std::min(tops[a], tops[b]) - z0));
+		std::array<Vec3, 4> upper = {Vec3{ax, ay, zb}, Vec3{bx, by, zb}, Vec3{bx, by, tops[b]}, Vec3{ax, ay, tops[a]}};
+		this->AddSpriteFace(tex, pl, upper, normal, mirror, cutout);
+		if (zb <= z0) return;
+		std::array<Vec3, 4> lower = {Vec3{ax, ay, z0}, Vec3{bx, by, z0}, Vec3{bx, by, zb}, Vec3{ax, ay, zb}};
+		this->AddSpriteFace(tex, pl, lower, normal, [&](Vec3 p) { p.z = zb; return mirror(p); }, cutout);
+	};
+	wall(1, 2, {1, 0, 0}, [](const Vec3 &p) { return p; });
+	wall(0, 3, {-1, 0, 0}, [&](Vec3 p) { p.x = hi.x; return p; });
+	wall(3, 2, {0, 1, 0}, [](const Vec3 &p) { return p; });
+	wall(0, 1, {0, -1, 0}, [&](Vec3 p) { p.y = hi.y; return p; });
 }
 
 /**
@@ -1225,66 +1268,547 @@ void Renderer::AddBox(const BoxSpriteToDraw &box, int ground_z, float height_sca
 	this->AddSpriteBox(tex, pl, lo, hi, box.zmin > ground_z, true);
 }
 
+/** A shape of a building tried on its sprite, relative to the north corner of the bottom of its box. */
+struct ShapeTry {
+	float x0, y0, x1, y1; ///< The footprint.
+	std::array<float, 4> walls; ///< Heights of the walls at the corners (x0, y0), (x1, y0), (x1, y1) and (x0, y1).
+	float ridge; ///< Height of the ridge of the roof; no roof when it is not above the walls.
+	RoofKind roof; ///< The kind of roof.
+};
+
+/** How well shapes of a building fit the outline of its sprite. */
+class SpriteFit {
+public:
+	/** How a shape fits. */
+	struct Result {
+		int score = 0; ///< Opaque pixels in the outline of the shape, less the transparent ones.
+		int inside = 0; ///< Opaque pixels in the outline.
+		int area = 0; ///< Pixels in the outline.
+		int above = 0; ///< Opaque pixels above the outline, like a tree behind a house.
+
+		/**
+		 * How much the outline and the sprite overlap.
+		 * @param opaque Opaque pixels of the sprite.
+		 * @return The pixels in both, compared to those in either.
+		 */
+		float Overlap(int opaque) const { return static_cast<float>(this->inside) / std::max(this->area + opaque - this->inside, 1); }
+	};
+
+	int opaque = 0; ///< Opaque pixels of the sprite.
+
+	/**
+	 * Prepare fitting shapes to a sprite.
+	 * @param tex The texture of the sprite, without widening.
+	 * @param ax Column where the north corner of the box is drawn, relative to where the sprite is drawn.
+	 * @param ay Row where the north corner of the box is drawn, relative to where the sprite is drawn.
+	 */
+	SpriteFit(const GroundTexture &tex, float ax, float ay) : pic(tex.levels[0]), left(tex.left), top(tex.top), ax(ax), ay(ay)
+	{
+		const size_t width = this->pic.width;
+		this->prefix.assign((this->pic.height + 1) * width, 0);
+		for (int y = 0; y < this->pic.height; y++) {
+			for (size_t x = 0; x < width; x++) {
+				const size_t i = y * width + x;
+				this->prefix[i + width] = this->prefix[i] + (this->pic.alpha[i] >= 0.5f ? 1 : 0);
+			}
+		}
+		for (size_t x = 0; x < width; x++) this->opaque += this->prefix[this->pic.height * width + x];
+	}
+
+	/**
+	 * Measure how well a shape fits the sprite: how many pixels of the outline of the shape are opaque.
+	 * @param s The shape.
+	 * @return How it fits.
+	 */
+	Result Measure(const ShapeTry &s) const
+	{
+		using Point = std::pair<float, float>;
+		std::array<Point, 10> points;
+		size_t n = 0;
+		auto add = [&](float x, float y, float z) { points[n++] = {2 * (y - x) - this->ax, x + y - z - this->ay}; };
+		const std::array<Point, 4> corners = {{{s.x0, s.y0}, {s.x1, s.y0}, {s.x1, s.y1}, {s.x0, s.y1}}};
+		for (int i = 0; i < 4; i++) {
+			add(corners[i].first, corners[i].second, 0);
+			add(corners[i].first, corners[i].second, s.walls[i]);
+		}
+		const float xc = (s.x0 + s.x1) / 2, yc = (s.y0 + s.y1) / 2;
+		if (s.ridge > *std::max_element(s.walls.begin(), s.walls.end())) {
+			switch (s.roof) {
+				case RoofKind::Hip:
+					if (s.x1 - s.x0 >= s.y1 - s.y0) {
+						const float half = (s.y1 - s.y0) / 2;
+						add(s.x0 + half, yc, s.ridge);
+						add(s.x1 - half, yc, s.ridge);
+					} else {
+						const float half = (s.x1 - s.x0) / 2;
+						add(xc, s.y0 + half, s.ridge);
+						add(xc, s.y1 - half, s.ridge);
+					}
+					break;
+				case RoofKind::GableX:
+					add(s.x0, yc, s.ridge);
+					add(s.x1, yc, s.ridge);
+					break;
+				case RoofKind::GableY:
+					add(xc, s.y0, s.ridge);
+					add(xc, s.y1, s.ridge);
+					break;
+				default:
+					break;
+			}
+		}
+		std::sort(points.begin(), points.begin() + n);
+
+		/* The top and the bottom edge of the outline, which is the convex hull of the points. */
+		auto turn = [](const Point &o, const Point &a, const Point &b) { return (a.first - o.first) * (b.second - o.second) - (a.second - o.second) * (b.first - o.first); };
+		std::array<Point, 10> upper, lower;
+		size_t n_upper = 0, n_lower = 0;
+		for (size_t i = 0; i < n; i++) {
+			while (n_upper >= 2 && turn(upper[n_upper - 2], upper[n_upper - 1], points[i]) <= 0) n_upper--;
+			upper[n_upper++] = points[i];
+			while (n_lower >= 2 && turn(lower[n_lower - 2], lower[n_lower - 1], points[i]) >= 0) n_lower--;
+			lower[n_lower++] = points[i];
+		}
+		auto row_at = [](const std::array<Point, 10> &edge, size_t len, float col) {
+			for (size_t i = 0; i + 1 < len; i++) {
+				if (col > edge[i + 1].first) continue;
+				const float span = edge[i + 1].first - edge[i].first;
+				if (span <= 0) return edge[i + 1].second;
+				return edge[i].second + (edge[i + 1].second - edge[i].second) * (col - edge[i].first) / span;
+			}
+			return edge[len - 1].second;
+		};
+
+		Result r;
+		const int first = static_cast<int>(std::ceil(points[0].first - this->left - 0.5f));
+		const int last = static_cast<int>(std::floor(points[n - 1].first - this->left - 0.5f));
+		for (int x = first; x <= last; x++) {
+			const float col = x + this->left + 0.5f;
+			const int from = static_cast<int>(std::ceil(row_at(upper, n_upper, col) - this->top - 0.5f));
+			const int to = static_cast<int>(std::floor(row_at(lower, n_lower, col) - this->top - 0.5f));
+			if (to < from) continue;
+			r.area += to - from + 1;
+			if (x < 0 || x >= this->pic.width) continue;
+			r.inside += this->Opaque(x, std::clamp(from, 0, this->pic.height), std::clamp(to + 1, 0, this->pic.height));
+			r.above += this->Opaque(x, 0, std::clamp(from - 1, 0, this->pic.height));
+		}
+		r.score = 2 * r.inside - r.area;
+		return r;
+	}
+
+private:
+	const Picture &pic; ///< The sprite.
+	int left; ///< Column of the left of the sprite, relative to where it is drawn.
+	int top; ///< Row of the top of the sprite, relative to where it is drawn.
+	float ax; ///< Column where the north corner of the box is drawn, relative to where the sprite is drawn.
+	float ay; ///< Row where the north corner of the box is drawn, relative to where the sprite is drawn.
+	std::vector<int> prefix; ///< Opaque pixels of each column above each row.
+
+	/** Count the opaque pixels of column x from row y0 up to row y1. */
+	int Opaque(int x, int y0, int y1) const
+	{
+		if (y1 <= y0) return 0;
+		return this->prefix[static_cast<size_t>(y1) * this->pic.width + x] - this->prefix[static_cast<size_t>(y0) * this->pic.width + x];
+	}
+};
+
+/** How the walls of a building tried on its sprite go. */
+enum class WallSlope : uint8_t {
+	Level, ///< All walls are as high, under a hip roof.
+	AlongX, ///< The roof slopes down along the x axis.
+	AlongY, ///< The roof slopes down along the y axis.
+};
+
 /**
- * Add a building as a real 3D shape: walls up to the eaves, and a roof up to the top of its sprite.
- * The heights come from the sprite: the eaves from the top of its west and east corner, the top of the
- * roof from the top of the sprite. Every point of the walls and the roof gets the pixel the game draws
- * there, so the painted roof lands on the roof.
+ * Make a shape out of the numbers changed while fitting it.
+ * @param v The footprint x0, y0, x1, y1, the two heights of the walls, and the height of the ridge.
+ * @param slope How the walls go.
+ * @return The shape.
+ */
+static ShapeTry MakeShapeTry(const std::array<float, 7> &v, WallSlope slope)
+{
+	ShapeTry s{v[0], v[1], v[2], v[3], {v[4], v[4], v[4], v[4]}, 0, RoofKind::Hip};
+	switch (slope) {
+		case WallSlope::Level: s.ridge = std::max(v[6], v[4]); break;
+		case WallSlope::AlongX: s.walls = {v[4], v[4], v[5], v[5]}; break;
+		case WallSlope::AlongY: s.walls = {v[5], v[4], v[4], v[5]}; break;
+	}
+	return s;
+}
+
+/**
+ * Work out the shape of a building from its sprite, as the box the viewport sorts it by is often much larger
+ * than the building. First a box is fitted to the outline of the sprite, so that as many of its pixels as
+ * possible are opaque and as many opaque pixels as possible are in it. Then the heights of the walls come from
+ * the vertical edges at the west and east corners, and the roof is the one that fits the top of the sprite
+ * best. Things no shape fits well that have something standing above them, like a farm house under a big tree,
+ * and plants, like a forest, become cut-outs.
+ * @param box The sprite and its box.
+ * @param station Whether it is a station building: those can be green in company colours, and often have a
+ *                roof sloping one way.
+ * @return The shape, relative to the north corner of the bottom of the box.
+ */
+const BuildingShape &Renderer::GetBuildingShape(const BoxSpriteToDraw &box, bool station)
+{
+	/* Where the viewport draws the sprite, relative to the north corner of the box, in ZOOM_BASE pixels. */
+	const int ax_base = box.x - 2 * (box.ymin - box.xmin) * ZOOM_BASE;
+	const int ay_base = box.y - (box.xmin + box.ymin - box.zmin) * ZOOM_BASE;
+	const float bx = static_cast<float>(box.xmax + 1 - box.xmin);
+	const float by = static_cast<float>(box.ymax + 1 - box.ymin);
+	const float bz = static_cast<float>(box.zmax + 1 - box.zmin);
+	auto key = std::make_tuple(box.image, box.pal, box.xmax - box.xmin, box.ymax - box.ymin, box.zmax - box.zmin, ax_base, ay_base, station);
+	auto it = this->building_shapes.find(key);
+	if (it != this->building_shapes.end()) return it->second;
+	BuildingShape &shape = this->building_shapes[key];
+	shape.x1 = bx;
+	shape.y1 = by;
+	shape.walls = {bz, bz, bz, bz};
+	shape.band = std::min(2.0f, bz / 3);
+
+	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal, false);
+	const Picture &pic = tex.levels[0];
+	if (pic.alpha.empty()) return shape;
+	const float ax = static_cast<float>(ax_base) / ZOOM_BASE;
+	const float ay = static_cast<float>(ay_base) / ZOOM_BASE;
+
+	/* Bottom edge of each column, and the outer columns of each row; positions relative to where the sprite is drawn. */
+	constexpr float NONE = -1e9f;
+	std::vector<float> bottom(pic.width, NONE);
+	std::vector<int> leftmost(pic.height, -1), rightmost(pic.height, -1);
+	int opaque = 0, green = 0;
+	for (int y = 0; y < pic.height; y++) {
+		for (int x = 0; x < pic.width; x++) {
+			if (pic.alpha[static_cast<size_t>(y) * pic.width + x] < 0.5f) continue;
+			opaque++;
+			const RGB &c = pic.pixels[static_cast<size_t>(y) * pic.width + x];
+			if (c.g > c.r + 8 && c.g > c.b + 8) green++;
+			bottom[x] = static_cast<float>(y + 1 + tex.top);
+			if (leftmost[y] < 0) leftmost[y] = x;
+			rightmost[y] = x;
+		}
+	}
+	if (opaque == 0) return shape;
+	auto column = [&](int x) { return x + tex.left + 0.5f; };
+	shape.plants = !station && green * 2 > opaque;
+
+	/* Footprints to start fitting from. Column 2 * (y - x) - ax and row x + y - z - ay are where the point (x, y, z) of the box is drawn. */
+	std::vector<std::array<float, 4>> starts;
+	auto add_start = [&](float c1, float c2, float w_col, float e_col) {
+		/* The bottom edges of the walls are on row = col / 2 + c1 west of the south corner, and row = c2 - col / 2 east of it. */
+		const float d = (c2 - c1 + ax) / 2;
+		const float s = (c1 + c2) / 2 + ay;
+		const float x1 = std::min((s - d) / 2, bx), y1 = std::min((s + d) / 2, by);
+		const float x0 = std::max(y1 - (e_col + ax) / 2, 0.0f), y0 = std::max(x1 + (w_col + ax) / 2, 0.0f);
+		if (x1 - x0 >= 1 && y1 - y0 >= 1) starts.push_back({x0, y0, x1, y1});
+	};
+	{
+		/* One building, whose south corner is the lowest point of the sprite; follow the bottom edges from there. */
+		const float s_row = *std::max_element(bottom.begin(), bottom.end());
+		float sum = 0;
+		int count = 0;
+		for (int x = 0; x < pic.width; x++) {
+			if (bottom[x] < s_row - 0.75f) continue;
+			sum += column(x);
+			count++;
+		}
+		const float s_col = sum / count;
+		const float c1 = s_row - s_col / 2, c2 = s_row + s_col / 2;
+		auto follow = [&](int dir) {
+			float end = s_col;
+			int misses = 0;
+			for (int x = static_cast<int>(std::floor(s_col)) - tex.left; x >= 0 && x < pic.width; x += dir) {
+				const float line = column(x) < s_col ? column(x) / 2 + c1 : c2 - column(x) / 2;
+				if (bottom[x] != NONE && std::abs(bottom[x] - line) <= 1.5f) {
+					end = static_cast<float>(x + tex.left + (dir > 0 ? 1 : 0));
+					misses = 0;
+				} else if (++misses > 3) {
+					break;
+				}
+			}
+			return end;
+		};
+		add_start(c1, c2, follow(-1), follow(1));
+	}
+	{
+		/* The lowest lines that no two neighbouring columns reach below, for a sprite whose bottom is cut off as the
+		 * ground sprite draws it; the corners are the outermost columns that reach down to the lines. */
+		auto lowest_line = [&](float slope) {
+			float lowest = NONE;
+			for (int x = 0; x + 1 < pic.width; x++) {
+				if (bottom[x] == NONE || bottom[x + 1] == NONE) continue;
+				lowest = std::max(lowest, std::min(bottom[x] - slope * column(x), bottom[x + 1] - slope * column(x + 1)));
+			}
+			return lowest;
+		};
+		const float c1 = lowest_line(0.5f), c2 = lowest_line(-0.5f);
+		if (c1 != NONE && c2 != NONE) {
+			auto near_line = [&](int x) {
+				if (x < 0 || x >= pic.width || bottom[x] == NONE) return false;
+				const float col = column(x);
+				return bottom[x] >= (col < c2 - c1 ? col / 2 + c1 : c2 - col / 2) - 3;
+			};
+			float w_col = c2 - c1, e_col = c2 - c1;
+			for (int x = 0; x < pic.width; x++) {
+				if (!near_line(x) || !near_line(x + 1)) continue;
+				w_col = static_cast<float>(x + tex.left);
+				break;
+			}
+			for (int x = pic.width - 1; x >= 0; x--) {
+				if (!near_line(x) || !near_line(x - 1)) continue;
+				e_col = static_cast<float>(x + tex.left + 1);
+				break;
+			}
+			add_start(c1, c2, w_col, e_col);
+		}
+	}
+	starts.push_back({0, 0, bx, by});
+
+	/* Fit a box, with a hip roof or a roof sloping one way, by changing one number at a time while that helps. */
+	SpriteFit fit(tex, ax, ay);
+	auto valid = [&](const std::array<float, 7> &v) {
+		return v[0] >= 0 && v[1] >= 0 && v[2] <= bx && v[3] <= by && v[2] - v[0] >= 1 && v[3] - v[1] >= 1 && v[4] >= 1 && v[5] >= 1 &&
+				v[4] <= 1.5f * bz + 4 && v[6] <= v[4] + 1.5f * std::max(v[2] - v[0], v[3] - v[1]);
+	};
+	auto descend = [&](std::array<float, 7> v, WallSlope slope) {
+		int best = fit.Measure(MakeShapeTry(v, slope)).score;
+		auto attempt = [&](const std::array<float, 7> &w) {
+			if (!valid(w)) return false;
+			const int score = fit.Measure(MakeShapeTry(w, slope)).score;
+			if (score <= best) return false;
+			best = score;
+			v = w;
+			return true;
+		};
+		for (float step = 2; step >= 0.25f;) {
+			bool improved = false;
+			for (size_t i = 0; i < v.size(); i++) {
+				if (i == (slope == WallSlope::Level ? 5 : 6)) continue;
+				for (float d : {step, -step}) {
+					std::array<float, 7> w = v;
+					w[i] += d;
+					if (i == 4 && slope == WallSlope::Level) w[6] = std::max(w[6], w[4]);
+					if (attempt(w)) improved = true;
+				}
+			}
+			/* Move the whole footprint. */
+			for (const std::pair<float, float> &move : {std::pair{step, 0.0f}, std::pair{-step, 0.0f}, std::pair{0.0f, step}, std::pair{0.0f, -step}}) {
+				std::array<float, 7> w = v;
+				w[0] += move.first;
+				w[2] += move.first;
+				w[1] += move.second;
+				w[3] += move.second;
+				if (attempt(w)) improved = true;
+			}
+			if (!improved) step /= 2;
+		}
+		return std::make_pair(best, v);
+	};
+	int best_score = std::numeric_limits<int>::min();
+	std::array<float, 7> best_v{};
+	WallSlope best_slope = WallSlope::Level;
+	for (const auto &start : starts) {
+		for (float h : {bz / 3, bz * 2 / 3}) {
+			for (WallSlope slope : {WallSlope::Level, WallSlope::AlongX, WallSlope::AlongY}) {
+				if (slope != WallSlope::Level && !station) continue;
+				auto found = descend({start[0], start[1], start[2], start[3], h, h, h}, slope);
+				if (found.first <= best_score) continue;
+				best_score = found.first;
+				best_v = found.second;
+				best_slope = slope;
+			}
+		}
+	}
+	const ShapeTry fitted = MakeShapeTry(best_v, best_slope);
+	const float x0 = fitted.x0, y0 = fitted.y0, x1 = fitted.x1, y1 = fitted.y1;
+	const float box_overlap = fit.Measure(fitted).Overlap(opaque);
+
+	/* The top of a wall at a corner is the top of the vertical edge there: the longest run of rows whose outer
+	 * pixel is in the same column, at the corner or a bit inside. That skips a platform the building stands on, and its roof. */
+	auto corner_top = [&](float col, bool west, float cx, float cy) -> std::optional<float> {
+		int best = 0, best_row = 0, run = 0, run_x = -1;
+		for (int y = pic.height - 1; y >= 0; y--) {
+			int x = west ? leftmost[y] : rightmost[y];
+			float edge = static_cast<float>(x + tex.left + (west ? 0 : 1));
+			if (x < 0 || (west ? edge < col - 0.5f || edge > col + 4.5f : edge > col + 0.5f || edge < col - 4.5f)) {
+				run = 0;
+				run_x = -1;
+				continue;
+			}
+			run = (x == run_x) ? run + 1 : 1;
+			run_x = x;
+			if (run >= best) {
+				best = run;
+				best_row = y + tex.top;
+			}
+		}
+		if (best < 2) return std::nullopt;
+		return std::max(cx + cy - best_row - ay, 1.0f);
+	};
+	std::optional<float> west = corner_top(2 * (y0 - x1) - ax, true, x1, y0);
+	std::optional<float> east = corner_top(2 * (y1 - x0) - ax, false, x0, y1);
+	ShapeTry result = fitted;
+	result.ridge = 0;
+	result.roof = RoofKind::Flat;
+	const bool differ = west.has_value() && east.has_value() && std::abs(*west - *east) > 2 + std::min(*west, *east) / 3;
+	if (best_slope == WallSlope::Level || differ) {
+		if (west.has_value() && east.has_value()) {
+			const float low = std::min(*west, *east), high = std::max(*west, *east);
+			if (!differ) {
+				result.walls = {low, low, low, low};
+			} else if (best_slope == WallSlope::AlongX) {
+				result.walls = {*west, *west, *east, *east};
+			} else if (best_slope == WallSlope::AlongY) {
+				result.walls = {*east, *west, *west, *east};
+			} else {
+				/* Not a simple house; the walls reach up to the top of both corners and the sprite shows the rest. */
+				result.walls = {high, high, high, high};
+			}
+		} else if (west.has_value() || east.has_value()) {
+			const float h = west.value_or(east.value_or(bz));
+			result.walls = {h, h, h, h};
+		}
+	}
+
+	/* The roof that fits the top of the sprite best, on level walls; not steeper than roofs are, and only when
+	 * it fits clearly better than a flat one, as that is no roof but a parapet or something on top. */
+	const float eave = result.walls[0];
+	if (std::all_of(result.walls.begin(), result.walls.end(), [eave](float h) { return h == eave; })) {
+		const int flat = fit.Measure(result).score;
+		int best_roof = flat + opaque / 50;
+		ShapeTry roofed = result;
+		for (RoofKind kind : {RoofKind::Hip, RoofKind::GableX, RoofKind::GableY}) {
+			roofed.roof = kind;
+			const float half_span = (kind == RoofKind::GableX ? y1 - y0 : kind == RoofKind::GableY ? x1 - x0 : std::min(x1 - x0, y1 - y0)) / 2;
+			for (roofed.ridge = eave + MIN_ROOF_HEIGHT / 2; roofed.ridge <= eave + 2.5f * half_span; roofed.ridge += 0.5f) {
+				const int score = fit.Measure(roofed).score;
+				if (score <= best_roof) continue;
+				best_roof = score;
+				result.roof = kind;
+				result.ridge = roofed.ridge;
+			}
+		}
+	}
+	SpriteFit::Result measured = fit.Measure(result);
+	if (measured.Overlap(opaque) < box_overlap - 0.1f) {
+		/* The walls and the roof do not fit; keep the box. */
+		result = fitted;
+		result.ridge = 0;
+		result.roof = RoofKind::Flat;
+		measured = fit.Measure(result);
+	}
+
+	/* Silos and chimneys are no buildings, and look like towers as boxes. */
+	const float thin = std::min(x1 - x0, y1 - y0);
+	const bool slender = !station && thin < 6 && result.walls[0] > 7 * thin;
+	shape.cutout = shape.plants || slender || (measured.Overlap(opaque) < 0.6f && measured.above > opaque / 5);
+	if (shape.cutout) {
+		/* A cut-out stands on the middle of the box. Plants have the bottom of the sprite on the ground, as trees
+		 * stand all over the tile; other things the ground in the middle of the box, so the back does not float. */
+		shape.foot_col = by - bx - ax;
+		shape.foot_row = shape.plants ? *std::max_element(bottom.begin(), bottom.end()) : (bx + by) / 2 - ay;
+		return shape;
+	}
+
+	shape.x0 = x0;
+	shape.y0 = y0;
+	shape.x1 = x1;
+	shape.y1 = y1;
+	shape.walls = result.walls;
+	shape.ridge = result.ridge;
+	shape.roof = result.roof;
+
+	/* The ground sprite often draws the lowest part of the walls; then the sprite stops above the bottom edges. */
+	std::vector<float> gaps;
+	const float s_col = 2 * (y1 - x1) - ax, s_row = x1 + y1 - ay;
+	for (int x = 0; x < pic.width; x++) {
+		const float col = column(x);
+		if (bottom[x] == NONE || col < 2 * (y0 - x1) - ax || col > 2 * (y1 - x0) - ax) continue;
+		gaps.push_back(s_row - std::abs(col - s_col) / 2 - bottom[x]);
+	}
+	float gap = 0;
+	if (!gaps.empty()) {
+		std::nth_element(gaps.begin(), gaps.begin() + gaps.size() / 2, gaps.end());
+		gap = std::clamp(gaps[gaps.size() / 2], 0.0f, *std::min_element(shape.walls.begin(), shape.walls.end()) / 3);
+	}
+	shape.band = std::max(std::min(2.0f, shape.walls[0] / 3), gap + 0.5f);
+	return shape;
+}
+
+/**
+ * Add a building as a real 3D shape: walls up to the eaves, and a roof up to the top of its sprite, see
+ * #GetBuildingShape. Every point of the walls and the roof gets the pixel the game draws there, so the
+ * painted roof lands on the roof. Things that are no box become cut-outs.
  * @param box The sprite and its box.
  * @param height_scale How much the heights are scaled, see #BUILDING_HEIGHT.
+ * @param station Whether it is a station building, see #GetBuildingShape.
  */
-void Renderer::AddBuilding(const BoxSpriteToDraw &box, float height_scale)
+void Renderer::AddBuilding(const BoxSpriteToDraw &box, float height_scale, bool station)
 {
-	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal);
-	if (tex.levels[0].alpha.empty()) return;
-
-	const float x0 = static_cast<float>(box.xmin), x1 = static_cast<float>(box.xmax + 1);
-	const float y0 = static_cast<float>(box.ymin), y1 = static_cast<float>(box.ymax + 1);
-	const float z0 = static_cast<float>(box.zmin), z1 = static_cast<float>(box.zmax + 1);
+	const BuildingShape &shape = this->GetBuildingShape(box, station);
+	const float bx = static_cast<float>(box.xmin), by = static_cast<float>(box.ymin);
+	const float z0 = static_cast<float>(box.zmin);
 	Placement pl;
 	pl.base = z0;
 	pl.height_scale = height_scale;
 	pl.sx = static_cast<float>(box.x) / ZOOM_BASE;
 	pl.sy = static_cast<float>(box.y) / ZOOM_BASE;
 
-	/* Height of the top of the sprite on the vertical line through a point of the ground. */
-	auto top_at = [&](float px, float py) -> std::optional<float> {
-		std::optional<int> row = TopRow(tex, 2 * (py - px) - pl.sx);
-		if (!row.has_value()) return std::nullopt;
-		return px + py - pl.sy - *row;
-	};
-	/* The outermost columns of the sprite are the west and east corners of the building. */
-	std::optional<float> west = top_at(x1 - 0.25f, y0 + 0.25f);
-	std::optional<float> east = top_at(x0 + 0.25f, y1 - 0.25f);
-	float eave = z1;
-	if (west.has_value() && east.has_value()) eave = std::min(*west, *east);
-	if (eave < z0 + 2) eave = z1;
-
-	/* When the sprite reaches above the north corner at the height of the eaves, there is a roof. Its top
-	 * is in the middle of the building, at the height that puts it at the top of the sprite. */
-	float ridge = eave;
-	std::optional<int> top = TopRow(tex);
-	if (top.has_value()) {
-		float north_row = x0 + y0 - eave - pl.sy;
-		float apex = (x0 + x1 + y0 + y1) / 2 - pl.sy - *top;
-		if (*top < north_row - MIN_ROOF_HEIGHT / 2 && apex >= eave + MIN_ROOF_HEIGHT) {
-			ridge = std::min(apex, eave + 2 * std::max(x1 - x0, y1 - y0));
+	if (shape.cutout) {
+		const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal, false);
+		Vec3 foot = {(bx + box.xmax + 1) / 2, (by + box.ymax + 1) / 2, z0};
+		if (shape.plants) {
+			this->AddCutout(tex, foot, shape.foot_col, shape.foot_row, CUTOUT_UNITS, CUTOUT_UNITS);
+		} else {
+			this->AddCutout(tex, foot, shape.foot_col, shape.foot_row, ISO_UNITS, height_scale);
 		}
+		return;
 	}
 
-	this->AddSpriteBox(tex, pl, {x0, y0, z0}, {x1, y1, eave}, false, false);
+	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal);
+	if (tex.levels[0].alpha.empty()) return;
+	const float x0 = bx + shape.x0, x1 = bx + shape.x1;
+	const float y0 = by + shape.y0, y1 = by + shape.y1;
+	std::array<float, 4> walls;
+	for (int i = 0; i < 4; i++) walls[i] = z0 + shape.walls[i];
+	const float eave = walls[0], ridge = z0 + shape.ridge;
+
+	this->AddSpriteWalls(tex, pl, {x0, y0, z0}, {x1, y1, z0}, walls, shape.band, true);
 	if (ridge <= eave) {
-		std::array<Vec3, 4> q = {Vec3{x0, y0, eave}, Vec3{x1, y0, eave}, Vec3{x1, y1, eave}, Vec3{x0, y1, eave}};
-		this->AddSpriteFace(tex, pl, q, {0, 0, 1}, [](const Vec3 &p) { return p; }, true);
+		/* A flat roof, or one sloping across the building. */
+		std::array<Vec3, 4> q = {Vec3{x0, y0, walls[0]}, Vec3{x1, y0, walls[1]}, Vec3{x1, y1, walls[2]}, Vec3{x0, y1, walls[3]}};
+		bool flat = walls[1] == eave && walls[2] == eave && walls[3] == eave;
+		this->AddSpriteFace(tex, pl, q, {0, 0, 1}, [](const Vec3 &p) { return p; }, flat);
+		return;
 	}
-	if (ridge <= eave) return;
 
-	/* Hip roof, with its ridge along the longer side of the building; a pyramid on a square one. */
 	const float xc = (x0 + x1) / 2, yc = (y0 + y1) / 2;
 	auto same = [](const Vec3 &p) { return p; };
 	auto mirror_x = [xc](Vec3 p) { p.x = 2 * xc - p.x; return p; };
 	auto mirror_y = [yc](Vec3 p) { p.y = 2 * yc - p.y; return p; };
-	if (x1 - x0 >= y1 - y0) {
+	if (shape.roof == RoofKind::GableX) {
+		/* Gable roof with its ridge along the x axis; the gables are walls. */
+		Vec3 r0 = {x0, yc, ridge}, r1 = {x1, yc, ridge};
+		std::array<Vec3, 4> south = {Vec3{x1, y1, eave}, Vec3{x0, y1, eave}, r0, r1};
+		std::array<Vec3, 4> north = {Vec3{x0, y0, eave}, Vec3{x1, y0, eave}, r1, r0};
+		std::array<Vec3, 3> west_end = {Vec3{x1, y0, eave}, Vec3{x1, y1, eave}, r1};
+		std::array<Vec3, 3> east_end = {Vec3{x0, y1, eave}, Vec3{x0, y0, eave}, r0};
+		this->AddSpriteFace(tex, pl, south, {0, 1, 1}, same, false);
+		this->AddSpriteFace(tex, pl, north, {0, -1, 1}, mirror_y, false);
+		this->AddSpriteFace(tex, pl, west_end, {1, 0, 0}, same, true);
+		this->AddSpriteFace(tex, pl, east_end, {-1, 0, 0}, mirror_x, true);
+	} else if (shape.roof == RoofKind::GableY) {
+		/* Gable roof with its ridge along the y axis. */
+		Vec3 r0 = {xc, y0, ridge}, r1 = {xc, y1, ridge};
+		std::array<Vec3, 4> south = {Vec3{x1, y0, eave}, Vec3{x1, y1, eave}, r1, r0};
+		std::array<Vec3, 4> north = {Vec3{x0, y1, eave}, Vec3{x0, y0, eave}, r0, r1};
+		std::array<Vec3, 3> east_end = {Vec3{x1, y1, eave}, Vec3{x0, y1, eave}, r1};
+		std::array<Vec3, 3> west_end = {Vec3{x0, y0, eave}, Vec3{x1, y0, eave}, r0};
+		this->AddSpriteFace(tex, pl, south, {1, 0, 1}, same, false);
+		this->AddSpriteFace(tex, pl, north, {-1, 0, 1}, mirror_x, false);
+		this->AddSpriteFace(tex, pl, east_end, {0, 1, 0}, same, true);
+		this->AddSpriteFace(tex, pl, west_end, {0, -1, 0}, mirror_y, true);
+	} else if (x1 - x0 >= y1 - y0) {
+		/* Hip roof, with its ridge along the longer side of the building; a pyramid on a square one. */
 		float half = (y1 - y0) / 2;
 		Vec3 r0 = {x0 + half, yc, ridge}, r1 = {x1 - half, yc, ridge};
 		std::array<Vec3, 4> south = {Vec3{x1, y1, eave}, Vec3{x0, y1, eave}, r0, r1};
@@ -1310,35 +1834,47 @@ void Renderer::AddBuilding(const BoxSpriteToDraw &box, float height_scale)
 }
 
 /**
- * Add a thing standing on a tile as a cut-out facing the camera, like trees and signals.
- * @param box The sprite and its box.
+ * Add a cut-out of a sprite facing the camera, like a tree.
+ * @param tex The texture of the sprite, without widening, see #GetBoxTexture.
+ * @param foot The point on the ground the cut-out stands on.
+ * @param foot_col Column of the sprite at that point, relative to where the sprite is drawn.
+ * @param foot_row Row of the sprite at that point, relative to where the sprite is drawn.
+ * @param scale_h Width of a pixel of the sprite, in world units.
+ * @param scale_v Height of a pixel of the sprite, in world units.
  */
-void Renderer::AddBillboard(const BoxSpriteToDraw &box)
+void Renderer::AddCutout(const GroundTexture &tex, const Vec3 &foot, float foot_col, float foot_row, float scale_h, float scale_v)
 {
-	const GroundTexture &tex = this->GetBoxTexture(box.image, box.pal, false);
 	const Picture &pic = tex.levels[0];
 	if (pic.alpha.empty()) return;
-
-	/* The point on the ground where the viewport draws the sprite. */
-	float sx = static_cast<float>(box.x) / ZOOM_BASE;
-	float sy = static_cast<float>(box.y) / ZOOM_BASE;
-	float z = static_cast<float>(box.zmin);
-	Vec3 base = {(sy + z - sx / 2) / 2, (sy + z + sx / 2) / 2, z};
 
 	/* Texture coordinates are pixels relative to where the sprite is drawn. */
 	float left = static_cast<float>(tex.left), right = static_cast<float>(tex.left + pic.width);
 	float top = static_cast<float>(tex.top), bottom = static_cast<float>(tex.top + pic.height);
 	auto corner = [&](float col, float row) {
 		ClipVertex v;
-		Vec3 p = base + this->cam.right * (col * CUTOUT_UNITS) + Vec3{0, 0, -row * CUTOUT_UNITS};
+		Vec3 p = foot + this->cam.right * ((col - foot_col) * scale_h) + Vec3{0, 0, (foot_row - row) * scale_v};
 		v.c = this->cam.ToCamera(p);
-		v.a = {col, row, col * CUTOUT_UNITS, row * CUTOUT_UNITS};
+		v.a = {col, row, col * scale_h, row * scale_v};
 		return v;
 	};
 	std::array<ClipVertex, 4> v = {corner(left, top), corner(right, top), corner(right, bottom), corner(left, bottom)};
 	Paint paint = {&tex, {}, 1.0f, 0, 1.0f, true};
 	this->AddTriangle({v[0], v[1], v[2]}, paint);
 	this->AddTriangle({v[0], v[2], v[3]}, paint);
+}
+
+/**
+ * Add a thing standing on a tile as a cut-out facing the camera, like trees and signals.
+ * The viewport draws the sprite where the thing stands.
+ * @param box The sprite and its box.
+ */
+void Renderer::AddBillboard(const BoxSpriteToDraw &box)
+{
+	float sx = static_cast<float>(box.x) / ZOOM_BASE;
+	float sy = static_cast<float>(box.y) / ZOOM_BASE;
+	float z = static_cast<float>(box.zmin);
+	Vec3 foot = {(sy + z - sx / 2) / 2, (sy + z + sx / 2) / 2, z};
+	this->AddCutout(this->GetBoxTexture(box.image, box.pal, false), foot, 0, 0, CUTOUT_UNITS, CUTOUT_UNITS);
 }
 
 /** Add the trains and road vehicles around the camera, as boxes dressed in their sprites. */
