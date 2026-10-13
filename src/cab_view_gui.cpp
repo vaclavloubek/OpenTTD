@@ -151,6 +151,7 @@ private:
 	int load_width = 0; ///< Width of the load part of the dashboard.
 	float yaw = 0; ///< Direction of view of the 3D view, eased towards the direction of travel.
 	float height = 0; ///< Height of the train for the 3D view, eased so steps on slopes don't make it jump; for an aircraft, of the ground below it.
+	float road_yaw = 0; ///< Direction of a road vehicle along the road before it started to turn.
 	float climb = 0; ///< Angle at which an aircraft climbs or descends, eased.
 	float aircraft_z = 0; ///< Height of an aircraft at the last game tick.
 	float train_x = 0; ///< X position of the front of the train at the last game tick, see #GetExactPosition.
@@ -322,6 +323,15 @@ private:
 
 		TileIndexDiffC diff = TileIndexDiffCByDir(v->direction);
 		float target = std::atan2(static_cast<float>(diff.y), static_cast<float>(diff.x));
+		/* Roads run along the axes of the tiles; a road vehicle facing north, east, south or west is halfway through
+		 * a turn. Look along the road it turns into, as a driver does, instead of at the corner of the block. */
+		if (v->type == VEH_ROAD) {
+			if (IsDiagonalDirection(v->direction)) {
+				this->road_yaw = target;
+			} else {
+				target += std::remainder(target - this->road_yaw, 2.0f * static_cast<float>(M_PI));
+			}
+		}
 		float turn = std::remainder(target - this->yaw, 2.0f * static_cast<float>(M_PI));
 		/* In a tunnel the view goes on along it; there is nothing to see from a depot or hangar. */
 		const bool aircraft = v->type == VEH_AIRCRAFT;

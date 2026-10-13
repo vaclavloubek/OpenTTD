@@ -187,6 +187,8 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - Tlačítko **3D** funguje i u autobusů, nákladních aut a tramvají. Oko je 3 jednotky nad silnicí (o kus níž než ve
   vlaku) a jede přesně po dráze vozidla, ne před ním: silniční vozidla zatáčejí na křižovatkách ostře a čelo by
   se přehouplo přes chodník do domů. Pohled se dotáčí na kratší dráze než u vlaku (3 jednotky místo 6).
+  Uprostřed odbočení (vozidlo míří na sever, východ, jih nebo západ) se kamera dívá rovnou do ulice, do které
+  vozidlo odbočuje, jako řidič, a ne šikmo do rohového domu.
 - **Silnice jsou 3D** (`AddRoad`, `GetRoadLook`), pro typy silnic ze základní grafiky (sprity jsou známé):
   - **Chodníky** městských silnic (okraj silnice dlážděný, s lampami nebo stromy) jsou o 0,3 jednotky vyvýšené,
     s obrubníkem. Jsou to kusy země dlaždice zvednuté nahoru, takže si nesou svůj obrázek ze hry. Šířka 3 jednotky
