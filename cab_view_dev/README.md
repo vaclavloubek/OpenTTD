@@ -182,6 +182,33 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
   Stíny a rotory vrtulníků se nekreslí.
 - Uložená hra na zkoušku: `kabina3d_letadlo.sav` (kopcovitá mapa, letadlo #1 druhé společnosti „Cab Test Rail“).
 
+### 3D pohled ze silničních vozidel
+
+- Tlačítko **3D** funguje i u autobusů, nákladních aut a tramvají. Oko je 3 jednotky nad silnicí (o kus níž než ve
+  vlaku) a jede přesně po dráze vozidla, ne před ním: silniční vozidla zatáčejí na křižovatkách ostře a čelo by
+  se přehouplo přes chodník do domů. Pohled se dotáčí na kratší dráze než u vlaku (3 jednotky místo 6).
+- **Silnice jsou 3D** (`AddRoad`, `GetRoadLook`), pro typy silnic ze základní grafiky (sprity jsou známé):
+  - **Chodníky** městských silnic (okraj silnice dlážděný, s lampami nebo stromy) jsou o 0,3 jednotky vyvýšené,
+    s obrubníkem. Jsou to kusy země dlaždice zvednuté nahoru, takže si nesou svůj obrázek ze hry. Šířka 3 jednotky
+    od kraje dlaždice, jak je kreslí grafika. Rovné kusy a křižovatky se dělí na 3 × 3 pole (vozovka uprostřed a ke
+    stranám se silnicí), zatáčky jsou oblouky kolem rohu dlaždice (malý chodník v rohu, velký kolem).
+  - **Dělicí čára** uprostřed je ostrá geometrie (čárky 1,6 dlouhé po 4 jednotkách, v zatáčce tři čárky po oblouku).
+    Rozmazanou čáru ze spritu (barva 15 palety) textura vynechá a doplní z okolí, na křižovatkách se nekreslí žádná.
+  - Zem rovné silnice se vyhlazuje podél ní jako u kolejí.
+  - **Tramvajové koleje** jsou kolejnice v silnici (jedna kolej uprostřed, v zatáčce po oblouku); tam není dělicí čára.
+    Ve hře bez NewGRF tramvaje nejsou, takže jsou vyzkoušené jen naoko (koleje na všech silnicích).
+  - **Zastávky** (průjezdné, ze základní grafiky) mají chodníky a čáru jako silnice a místo spritů na chodnících
+    stojí přístřešky: autobusové se skleněnou střechou a zadní stěnou, sloupky a lavičkou, pro nákladní auta malá
+    cihlová budka. U každého stojí sloupek s cedulí v barvě společnosti (`AddRoadStop`).
+  - **Silniční tunely** mají uvnitř silnici s čárou místo kolejí a pražců.
+- Ostatní silniční vozidla jsou plné kvádry (bez vyřezávání průhledných míst): zezadu se v nich jinak dělaly díry
+  mezi střechou a zádí. Jsou 1,6× vyšší a širší než podle spritu (nejvýš 4 jednotky široká), aby střecha autobusu
+  byla nad okem.
+- Testovací AI `CabRoadAI/`: dva autobusy (různým směrem) mezi zastávkou u středu největšího města, zastávkou na
+  druhém konci města a zastávkou na nové silnici ven z města; ta vede tunelem kopcem (AI ho navrší) a přes železniční
+  přejezd. Spustit jako `CabTestAI` (zkopírovat do `ai/`, v `game_start.scr` `start_ai CabRoadAI`), nejlépe s
+  `larger_towns = 1` a `initial_city_size = 4` v `[economy]`, aby bylo velké město. Do logu píše `BUS <číslo>`.
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt

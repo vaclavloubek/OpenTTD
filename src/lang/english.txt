@@ -4518,7 +4518,7 @@ STR_CAB_VIEW_CAPTION                                            :{WHITE}Cab view
 STR_CAB_VIEW_LOOK_AHEAD                                         :{BLACK}Look ahead
 STR_CAB_VIEW_LOOK_AHEAD_TOOLTIP                                 :{BLACK}Toggle between looking ahead in the direction of travel and keeping the vehicle in the centre of the view
 STR_CAB_VIEW_3D                                                 :{BLACK}3D
-STR_CAB_VIEW_3D_TOOLTIP                                         :{BLACK}Toggle between the map view and a 3D view from the cab of the train or aircraft
+STR_CAB_VIEW_3D_TOOLTIP                                         :{BLACK}Toggle between the map view and a 3D view from the cab of the train, road vehicle or aircraft
 STR_CAB_VIEW_START                                              :{BLACK}Start
 STR_CAB_VIEW_STOP                                               :{BLACK}Stop
 STR_CAB_VIEW_START_STOP_TOOLTIP                                 :{BLACK}Start or stop the vehicle
