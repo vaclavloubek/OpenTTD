@@ -15,8 +15,10 @@
  * of the tile runs like for a viewport (see #CollectTileGroundSprites), its ground sprites are
  * put together and the isometric picture is mapped back onto the tile surface in 3D. A point
  * (x, y, z) of the tile is at screen pixel (2 (y - x), x + y - z), which is #RemapCoords.
- * Textures are sampled smoothly, so there are no big pixels even close by. Rails and sleepers
- * are drawn on top as geometry, so they stay sharp up close.
+ * Textures are sampled smoothly, so there are no big pixels even close by. As the sprites have
+ * only a few pixels per tile, the colour of each pixel of the ground tells what it is made of,
+ * like grass or ballast, and a fine pattern of that material is laid over it, see #DetailPatterns.
+ * Rails and sleepers are drawn on top as geometry, so they stay sharp up close.
  *
  * Things standing on stations, like platforms and station buildings, are drawn as the boxes
  * the viewport sorts them by, with the sprite mapped back onto the sides the same way. The
@@ -83,7 +85,13 @@ constexpr float SHIP_MIN_UPRIGHT = 0.4f; ///< How much the sprite of a ship seen
 constexpr float FOV_DEG = 64.0f; ///< Horizontal field of view.
 constexpr float PITCH_DEG = -6.0f; ///< How much the camera looks down.
 constexpr float NEAR = 0.5f; ///< Near clipping distance.
-constexpr float DETAIL_DIST = 6.0f * TILE; ///< Distance where the fine ground pattern has faded out.
+constexpr float DETAIL_DIST = 6.0f * TILE; ///< Distance where the fine pattern on walls and roofs has faded out.
+constexpr int DETAIL_SIZE = 128; ///< Width and height of the patterns of the materials of the ground, in pixels; they repeat.
+constexpr float DETAIL_PERIOD = 4.0f; ///< Distance after which the patterns of the materials of the ground repeat.
+constexpr int DETAIL_LEVELS = 6; ///< Number of smaller versions of the patterns of the materials, used further away so the ground does not glitter.
+constexpr int MOTTLE_SIZE = 64; ///< Width and height of the large patches of lighter and darker ground, in pixels; they repeat.
+constexpr float MOTTLE_PERIOD = 4.0f * TILE; ///< Distance after which the large patches of lighter and darker ground repeat.
+constexpr int MOTTLE_LEVELS = 5; ///< Number of smaller versions of the large patches of lighter and darker ground.
 constexpr float RAIL_DIST = 24.0f * TILE; ///< Rails are drawn as geometry up to this distance.
 constexpr float RAIL_FADE_START = 6.0f * TILE; ///< From this distance on, rails blend into the ballast, as they get thinner than a pixel.
 constexpr float SLEEPER_DIST = 10.0f * TILE; ///< Sleepers are drawn as geometry up to this distance.
@@ -373,11 +381,40 @@ constexpr int TEXTURE_LEVELS = 4;
  * The ground sprites of a tile put together, in normal zoom screen pixels.
  * Also used for a single sprite standing in a box; then it is relative to where the sprite is drawn.
  */
+/** What the ground is made of, as far as its fine pattern goes, see #DetailPatterns. */
+enum class Material : uint8_t {
+	None, ///< No pattern, like water.
+	Grass, ///< Grass, with blades.
+	Soil, ///< Fields and bare land, with clods.
+	Gravel, ///< Ballast and stones, with pebbles.
+	Asphalt, ///< Roads, finely grained.
+	Sand, ///< Desert and beaches, with ripples.
+	Snow, ///< Snow, almost smooth.
+	End, ///< Number of materials.
+};
+
 struct GroundTexture {
 	int left = 0; ///< Screen column of the first pixel, relative to the north corner of the tile.
 	int top = 0; ///< Screen row of the first pixel, relative to the north corner of the tile at its height.
 	std::array<Picture, TEXTURE_LEVELS> levels; ///< The picture, and versions of half, a quarter... the size.
 	RGB mean = {0, 0, 0}; ///< Average colour of the opaque pixels.
+	std::vector<Material> material; ///< What the ground is made of at each pixel of the picture; empty for things other than the ground, or when it is the same everywhere.
+	Material uniform_material = Material::None; ///< What the ground is made of, when #material is empty.
+
+	/**
+	 * Get what the ground is made of at a point of the texture.
+	 * @param col Screen column relative to the north corner of the tile.
+	 * @param row Screen row relative to the north corner of the tile at its height.
+	 * @return The material.
+	 */
+	Material GetMaterial(float col, float row) const
+	{
+		if (this->material.empty()) return this->uniform_material;
+		const Picture &pic = this->levels[0];
+		int x = std::clamp(static_cast<int>(std::floor(col - this->left)), 0, pic.width - 1);
+		int y = std::clamp(static_cast<int>(std::floor(row - this->top)), 0, pic.height - 1);
+		return this->material[static_cast<size_t>(y) * pic.width + x];
+	}
 
 	/**
 	 * Sample the texture smoothly.
@@ -522,6 +559,7 @@ struct Paint {
 	int level; ///< Which version of the texture to use, see #GroundTexture::levels.
 	float bias; ///< Depth bias, so things lying on the ground win from the ground.
 	bool cutout = false; ///< Whether pixels where the texture is transparent are left out.
+	bool ground = false; ///< Whether it is the ground, which gets the fine pattern of its material, see #DetailPatterns.
 };
 
 /** A triangle on the screen, ready to fill. */
@@ -530,6 +568,7 @@ struct ScreenTriangle {
 	std::array<float, 3> ex, ey, ec; ///< Edge functions: the weight of each corner is ex * x + ey * y + ec.
 	std::array<float, 3> iw; ///< Inverse depth of each corner.
 	std::array<std::array<float, ATTRIBUTES>, 3> aw; ///< Attributes of each corner, divided by its depth.
+	float footprint = 0; ///< Size of a pixel of the screen on the triangle, in world units, divided by the square of the depth; for the ground.
 	Paint paint; ///< How to paint it.
 };
 
@@ -747,6 +786,331 @@ static Picture SmoothAlong(const Picture &pic, float dx, float dy)
 		}
 	}
 	return smooth;
+}
+
+/**
+ * Hash of a point of a pattern, for making patterns that look random but are the same every time.
+ * @param x Column.
+ * @param y Row.
+ * @param seed Which pattern.
+ * @return A number from 0 to 1.
+ */
+static float PatternHash(uint32_t x, uint32_t y, uint32_t seed)
+{
+	uint32_t h = x * 0x8DA6B343U ^ y * 0xD8163841U ^ seed * 0xCB1AB31FU;
+	h ^= h >> 15;
+	h *= 0x2C1B3C6DU;
+	h ^= h >> 12;
+	h *= 0x297A2D39U;
+	h ^= h >> 15;
+	return (h & 0xFFFFFF) / static_cast<float>(0x1000000);
+}
+
+/** A pattern of brightness changes around zero that repeats, with smaller versions of it for further away. */
+struct Pattern {
+	int size = 0; ///< Width and height of the largest version.
+	std::vector<std::vector<float>> levels; ///< The pattern, and versions of half, a quarter... the size.
+
+	/**
+	 * Make the smaller versions of the pattern, each pixel the average of four.
+	 * @param pixels The pattern, row by row.
+	 * @param count Number of versions in total.
+	 */
+	void Build(std::vector<float> pixels, int count)
+	{
+		this->size = static_cast<int>(std::lround(std::sqrt(static_cast<float>(pixels.size()))));
+		/* Make it vary around zero, about one up and down. */
+		float mean = 0, var = 0;
+		for (float p : pixels) mean += p;
+		mean /= pixels.size();
+		for (float p : pixels) var += (p - mean) * (p - mean);
+		float scale = 1.0f / std::max(1e-6f, std::sqrt(var / pixels.size()));
+		for (float &p : pixels) p = (p - mean) * scale;
+
+		this->levels.clear();
+		this->levels.push_back(std::move(pixels));
+		for (int level = 1, n = this->size / 2; level < count && n >= 1; level++, n /= 2) {
+			const std::vector<float> &big = this->levels.back();
+			std::vector<float> half(static_cast<size_t>(n) * n);
+			for (int y = 0; y < n; y++) {
+				for (int x = 0; x < n; x++) {
+					const size_t i = static_cast<size_t>(2 * y) * (2 * n) + 2 * x;
+					half[static_cast<size_t>(y) * n + x] = (big[i] + big[i + 1] + big[i + 2 * n] + big[i + 2 * n + 1]) * 0.25f;
+				}
+			}
+			this->levels.push_back(std::move(half));
+		}
+	}
+
+	/**
+	 * Sample a version of the pattern smoothly.
+	 * @param u Column in pixels of the largest version.
+	 * @param v Row in pixels of the largest version.
+	 * @param level Which version.
+	 * @return The brightness change.
+	 */
+	float Sample(float u, float v, int level) const
+	{
+		const int n = this->size >> level;
+		const float s = 1.0f / (1 << level);
+		float fx = u * s - 0.5f, fy = v * s - 0.5f;
+		const float ix = std::floor(fx), iy = std::floor(fy);
+		fx -= ix;
+		fy -= iy;
+		/* The size is a power of two, so the pattern repeats by masking. */
+		const int x0 = static_cast<int>(ix) & (n - 1), y0 = static_cast<int>(iy) & (n - 1);
+		const int x1 = (x0 + 1) & (n - 1), y1 = (y0 + 1) & (n - 1);
+		const std::vector<float> &p = this->levels[level];
+		const float a = p[y0 * n + x0], b = p[y0 * n + x1], c = p[y1 * n + x0], d = p[y1 * n + x1];
+		return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+	}
+};
+
+/**
+ * Smooth noise that repeats over a square of pixels.
+ * @param x Column, in pixels.
+ * @param y Row, in pixels.
+ * @param size Width and height of the square, in pixels.
+ * @param cells Number of random values across the square; a power of two at most \a size.
+ * @param seed Which noise.
+ * @return A number from 0 to 1.
+ */
+static float TiledNoise(int x, int y, int size, int cells, uint32_t seed)
+{
+	const float fx = (x + 0.5f) * cells / size, fy = (y + 0.5f) * cells / size;
+	const int ix = static_cast<int>(fx), iy = static_cast<int>(fy);
+	float tx = fx - ix, ty = fy - iy;
+	tx = tx * tx * (3 - 2 * tx);
+	ty = ty * ty * (3 - 2 * ty);
+	auto at = [&](int cx, int cy) { return PatternHash(cx & (cells - 1), cy & (cells - 1), seed); };
+	const float a = at(ix, iy), b = at(ix + 1, iy), c = at(ix, iy + 1), d = at(ix + 1, iy + 1);
+	return (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty;
+}
+
+/**
+ * Fine patterns of what the ground is made of, and large patches of lighter and darker ground.
+ * The pictures of the base graphics have only a few pixels per unit of the world, so up close the ground is blurry
+ * however smoothly it is sampled, and every tile of grass looks the same. The patterns add the grain of the material
+ * fixed to the world, like blades of grass or pebbles of the ballast, while the colour still comes from the graphics.
+ */
+class DetailPatterns {
+public:
+	/**
+	 * Get the patterns, making them the first time.
+	 * @return The patterns.
+	 */
+	static const DetailPatterns &Get()
+	{
+		static const DetailPatterns patterns;
+		return patterns;
+	}
+
+	/**
+	 * Get how much lighter or darker the ground is at a point.
+	 * @param tex The texture of the ground, telling what it is made of.
+	 * @param col Screen column of the point in the texture.
+	 * @param row Screen row of the point in the texture.
+	 * @param x World x of the point.
+	 * @param y World y of the point.
+	 * @param footprint Size of a pixel of the screen on the ground there, in world units.
+	 * @return The change of brightness.
+	 */
+	float Shade(const GroundTexture &tex, float col, float row, float x, float y, float footprint) const
+	{
+		constexpr float DETAIL_SCALE = DETAIL_SIZE / DETAIL_PERIOD;
+		constexpr float MOTTLE_SCALE = MOTTLE_SIZE / MOTTLE_PERIOD;
+		constexpr float MOTTLE_LOD = std::bit_width(static_cast<unsigned>(DETAIL_SCALE / MOTTLE_SCALE)) - 1;
+		const float lod = FastLog2(footprint * DETAIL_SCALE);
+		/* Far away, in the haze, the patches fade out too. */
+		const float mottle_fade = std::min(1.0f, MOTTLE_FADE_END - lod);
+		if (mottle_fade <= 0) return 0;
+
+		/* Blur the edges between materials, which are steps of pixels in the graphics. */
+		const auto &[jx, jy, dither] = this->jitter[(static_cast<int>(y * 8) & (JITTER_SIZE - 1)) * JITTER_SIZE + (static_cast<int>(x * 8) & (JITTER_SIZE - 1))];
+		const size_t m = to_underlying(tex.GetMaterial(col + jx, row + jy));
+		if (m == to_underlying(Material::None)) return 0;
+
+		/* Pick a version of the pattern for the size of the pixel; picking the larger or the smaller one at random
+		 * in between hides where they meet, and is cheaper than mixing both. */
+		const int level = std::max(0, static_cast<int>(lod + dither));
+		float light = level < DETAIL_LEVELS ? this->detail[m].Sample(x * DETAIL_SCALE, y * DETAIL_SCALE, level) * STRENGTH[m] : 0.0f;
+		if (MOTTLE_STRENGTH[m] > 0) {
+			/* The patches are large, so the nearest version of them is good enough. */
+			const int level = std::clamp(static_cast<int>(lod - MOTTLE_LOD + 0.5f), 0, MOTTLE_LEVELS - 1);
+			light += this->mottle.Sample(x * MOTTLE_SCALE, y * MOTTLE_SCALE, level) * MOTTLE_STRENGTH[m] * mottle_fade;
+		}
+		return light;
+	}
+
+private:
+	/** How strongly the fine pattern of each material changes the brightness. */
+	static constexpr std::array<float, to_underlying(Material::End)> STRENGTH = {0.0f, 0.22f, 0.18f, 0.28f, 0.08f, 0.10f, 0.05f};
+	/** How strongly the large patches change the brightness of each material. */
+	static constexpr std::array<float, to_underlying(Material::End)> MOTTLE_STRENGTH = {0.0f, 0.07f, 0.06f, 0.03f, 0.0f, 0.05f, 0.03f};
+
+	static constexpr int JITTER_SIZE = 64; ///< Width and height of the table of #jitter.
+	static constexpr float MOTTLE_FADE_END = 9.0f; ///< Level of detail where the large patches have faded out, see #Shade; about where the haze starts.
+
+	std::array<Pattern, to_underlying(Material::End)> detail; ///< The fine pattern of each material.
+	Pattern mottle; ///< The large patches of lighter and darker ground.
+	std::array<std::tuple<float, float, float>, JITTER_SIZE * JITTER_SIZE> jitter; ///< Random shifts of where the material is looked up, in screen columns and rows, and of the level of detail.
+
+	/**
+	 * Base 2 logarithm, roughly: exact at powers of two, and straight between them.
+	 * @param v The number, more than zero.
+	 * @return The logarithm.
+	 */
+	static float FastLog2(float v)
+	{
+		const uint32_t bits = std::bit_cast<uint32_t>(std::max(v, 1e-20f));
+		return static_cast<float>(static_cast<int>(bits >> 23) - 127) + (bits & 0x7FFFFF) * (1.0f / 0x800000);
+	}
+
+	DetailPatterns()
+	{
+		constexpr int N = DETAIL_SIZE;
+		std::vector<float> p(static_cast<size_t>(N) * N);
+		auto fill = [&](auto &&f) {
+			for (int y = 0; y < N; y++) {
+				for (int x = 0; x < N; x++) p[static_cast<size_t>(y) * N + x] = f(x, y);
+			}
+		};
+		auto noise = [](int x, int y, int cells, uint32_t seed) { return TiledNoise(x, y, N, cells, seed) - 0.5f; };
+
+		/* Grass: soft clumps, and short blades, some lit and some in shadow. */
+		fill([&](int x, int y) { return 0.5f * noise(x, y, 32, 1) + 0.3f * noise(x, y, 64, 2) + 0.2f * noise(x, y, 16, 3); });
+		for (uint32_t i = 0; i < 2600; i++) {
+			const float bx = PatternHash(i, 0, 10) * N, by = PatternHash(i, 1, 10) * N;
+			const float angle = PatternHash(i, 2, 10) * 6.2832f;
+			const float length = 2 + PatternHash(i, 3, 10) * 4;
+			const float value = PatternHash(i, 4, 10) < 0.6f ? 0.9f : -0.8f;
+			for (float s = 0; s < length; s += 0.5f) {
+				const int px = static_cast<int>(bx + std::cos(angle) * s) & (N - 1), py = static_cast<int>(by + std::sin(angle) * s) & (N - 1);
+				p[static_cast<size_t>(py) * N + px] += value * 0.5f * (1 - s / length);
+			}
+		}
+		this->detail[to_underlying(Material::Grass)].Build(p, DETAIL_LEVELS);
+
+		/* Soil: clods, with dark cracks between them. */
+		fill([&](int x, int y) {
+			const float crack = std::abs(noise(x, y, 8, 21) + 0.5f * noise(x, y, 32, 22));
+			return 0.45f * noise(x, y, 16, 23) + 0.35f * noise(x, y, 32, 24) + 0.25f * noise(x, y, 128, 25) - (crack < 0.04f ? 0.5f * (1 - crack / 0.04f) : 0.0f);
+		});
+		this->detail[to_underlying(Material::Soil)].Build(p, DETAIL_LEVELS);
+
+		/* Gravel: pebbles of different brightness, darker in the gaps between them. */
+		constexpr int PEBBLES = 20;
+		auto pebble = [](int cx, int cy, int axis) {
+			return (PatternHash(cx % PEBBLES, cy % PEBBLES, 31 + axis) * 0.8f + 0.1f + (axis == 0 ? cx : cy)) * N / PEBBLES;
+		};
+		fill([&](int x, int y) {
+			const int cx = x * PEBBLES / N, cy = y * PEBBLES / N;
+			float d1 = 1e9f, d2 = 1e9f;
+			int best_x = 0, best_y = 0;
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dx = -1; dx <= 1; dx++) {
+					const int nx = cx + dx + PEBBLES, ny = cy + dy + PEBBLES;
+					const float px = pebble(nx, ny, 0) - N, py = pebble(nx, ny, 1) - N;
+					const float d = std::hypot(px - x - 0.5f, py - y - 0.5f);
+					if (d < d1) {
+						d2 = d1;
+						d1 = d;
+						best_x = nx;
+						best_y = ny;
+					} else if (d < d2) {
+						d2 = d;
+					}
+				}
+			}
+			const float gap = d2 - d1;
+			return (PatternHash(best_x % PEBBLES, best_y % PEBBLES, 33) - 0.5f) * 1.2f - (gap < 1.5f ? 0.7f * (1 - gap / 1.5f) : 0.0f) + 0.3f * noise(x, y, 64, 34);
+		});
+		this->detail[to_underlying(Material::Gravel)].Build(p, DETAIL_LEVELS);
+
+		/* Asphalt: a fine grain. */
+		fill([&](int x, int y) { return 0.5f * noise(x, y, 64, 41) + 0.5f * (PatternHash(x, y, 42) - 0.5f); });
+		this->detail[to_underlying(Material::Asphalt)].Build(p, DETAIL_LEVELS);
+
+		/* Sand: ripples blown by the wind, and a fine grain. */
+		fill([&](int x, int y) {
+			const float wave = std::sin(6.2832f * (y * 10.0f / N + 1.5f * noise(x, y, 4, 51)));
+			return 0.6f * wave + 0.4f * noise(x, y, 64, 52);
+		});
+		this->detail[to_underlying(Material::Sand)].Build(p, DETAIL_LEVELS);
+
+		/* Snow: almost smooth, softly uneven. */
+		fill([&](int x, int y) { return 0.6f * noise(x, y, 8, 61) + 0.4f * noise(x, y, 32, 62); });
+		this->detail[to_underlying(Material::Snow)].Build(p, DETAIL_LEVELS);
+
+		std::vector<float> m(static_cast<size_t>(MOTTLE_SIZE) * MOTTLE_SIZE);
+		for (int y = 0; y < MOTTLE_SIZE; y++) {
+			for (int x = 0; x < MOTTLE_SIZE; x++) {
+				m[static_cast<size_t>(y) * MOTTLE_SIZE + x] = 0.6f * TiledNoise(x, y, MOTTLE_SIZE, 4, 71) + 0.3f * TiledNoise(x, y, MOTTLE_SIZE, 8, 72) + 0.1f * TiledNoise(x, y, MOTTLE_SIZE, 16, 73);
+			}
+		}
+		this->mottle.Build(std::move(m), MOTTLE_LEVELS);
+
+		for (int i = 0; i < JITTER_SIZE * JITTER_SIZE; i++) {
+			/* Screen columns are half as large as rows in the world. */
+			this->jitter[i] = {2 * PatternHash(i, 0, 91) - 1, PatternHash(i, 0, 92) - 0.5f, PatternHash(i, 0, 93)};
+		}
+	}
+};
+
+/**
+ * Tell what the ground is made of from its colour in the graphics.
+ * @param c The colour, averaged over a few pixels.
+ * @param track Whether the ground carries track; its brown and dark ground is the ballast.
+ * @param road Whether the ground carries a road; its grey ground is the roadway.
+ * @return The material.
+ */
+static Material GuessMaterial(const RGB &c, bool track, bool road)
+{
+	const float hi = std::max({c.r, c.g, c.b}), lo = std::min({c.r, c.g, c.b});
+	const float lum = (c.r + c.g + c.b) / 3;
+	const float sat = hi > 0 ? (hi - lo) / hi : 0;
+	if (c.b > c.r + 12 && c.b >= c.g - 4) return Material::None;
+	if (c.g >= c.r && c.g > c.b + 10) return Material::Grass;
+	if (track) return lum > 190 ? Material::Snow : Material::Gravel;
+	if (sat < 0.16f) {
+		if (lum > 190) return Material::Snow;
+		if (lum < 95 || road) return Material::Asphalt;
+		return Material::Gravel;
+	}
+	if (c.r >= c.g && c.g >= c.b) return (lum > 150 && c.g > 0.75f * c.r) ? Material::Sand : Material::Soil;
+	return Material::Gravel;
+}
+
+/**
+ * Work out what the ground is made of at each pixel of a texture, see #DetailPatterns.
+ * @param tex The finished texture of the ground.
+ * @param track Whether the ground carries track.
+ * @param road Whether the ground carries a road.
+ */
+static void GuessMaterials(GroundTexture &tex, bool track, bool road)
+{
+	const Picture &pic = tex.levels[0];
+	tex.material.resize(pic.pixels.size());
+	for (int y = 0; y < pic.height; y++) {
+		for (int x = 0; x < pic.width; x++) {
+			RGB sum = {0, 0, 0};
+			int n = 0;
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dx = -1; dx <= 1; dx++) {
+					const int nx = x + dx, ny = y + dy;
+					if (nx < 0 || ny < 0 || nx >= pic.width || ny >= pic.height) continue;
+					sum = sum + pic.pixels[static_cast<size_t>(ny) * pic.width + nx];
+					n++;
+				}
+			}
+			tex.material[static_cast<size_t>(y) * pic.width + x] = GuessMaterial(sum * (1.0f / n), track, road);
+		}
+	}
+	/* Most tiles are all grass; they don't need to look it up. */
+	if (std::ranges::all_of(tex.material, [&](Material m) { return m == tex.material[0]; })) {
+		tex.uniform_material = tex.material[0];
+		tex.material.clear();
+	}
 }
 
 /**
@@ -1150,6 +1514,11 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 	}
 
 	FinishTexture(tex, std::move(alpha), building ? MAX_FILL_PASSES : 4, false, smooth);
+	const bool track = IsTileType(tile, MP_RAILWAY) || IsRailStationTile(tile) ||
+			(IsTileType(tile, MP_TUNNELBRIDGE) && GetTunnelBridgeTransportType(tile) == TRANSPORT_RAIL);
+	const bool road = IsTileType(tile, MP_ROAD) || IsAnyRoadStopTile(tile) ||
+			(IsTileType(tile, MP_TUNNELBRIDGE) && GetTunnelBridgeTransportType(tile) == TRANSPORT_ROAD);
+	GuessMaterials(tex, track && !road, road);
 	return tex;
 }
 
@@ -1310,6 +1679,13 @@ void Renderer::SetupTriangle(const ClipVertex &a, const ClipVertex &b, const Cli
 		t.ec[i] = (sx[j] * sy[k] - sx[k] * sy[j]) * inv_area;
 	}
 	t.paint = paint;
+	if (paint.ground) {
+		/* Seen at a slant, a pixel covers more of the ground; the slant is the distance of the plane of the
+		 * triangle from the camera divided by the distance of the point. */
+		Vec3 n = (b.c - a.c).Cross(c.c - a.c);
+		float plane = std::abs(n.Dot(a.c)) / std::sqrt(std::max(n.Dot(n), 1e-12f));
+		t.footprint = 1.0f / (this->cam.focal * std::max(plane, 0.05f));
+	}
 	if (paint.texture != nullptr) {
 		/* Use a smaller version of the texture when many texture pixels fall on one screen pixel. */
 		float tex_area = std::abs((v[1]->a[0] - v[0]->a[0]) * (v[2]->a[1] - v[0]->a[1]) - (v[2]->a[0] - v[0]->a[0]) * (v[1]->a[1] - v[0]->a[1]));
@@ -1384,6 +1760,7 @@ void Renderer::AddFlatBox(const Vec3 &lo, const Vec3 &hi, const RGB &colour)
 void Renderer::Rasterise(int stripe, int stripes)
 {
 	std::array<float, ATTRIBUTES> attr;
+	const DetailPatterns &patterns = DetailPatterns::Get();
 	for (const ScreenTriangle &t : this->triangles) {
 		const Paint &paint = t.paint;
 		for (int y = t.y0; y <= t.y1; y++) {
@@ -1427,7 +1804,9 @@ void Renderer::Rasterise(int stripe, int stripes)
 					if (paint.cutout && paint.texture->SampleAlpha(attr[0], attr[1], paint.level) < 0.5f) continue;
 					colour = paint.texture->Sample(attr[0], attr[1], paint.level);
 					float light = paint.shade;
-					if (dist < DETAIL_DIST) {
+					if (paint.ground) {
+						light += patterns.Shade(*paint.texture, attr[0], attr[1], attr[2], attr[3], dist * dist * t.footprint);
+					} else if (dist < DETAIL_DIST) {
 						/* Fine pattern fixed to the world, so the ground does not look blurry up close. */
 						uint32_t gx = static_cast<uint32_t>(static_cast<int>(std::floor(attr[2] * 4)));
 						uint32_t gy = static_cast<uint32_t>(static_cast<int>(std::floor(attr[3] * 4)));
@@ -1589,7 +1968,7 @@ void Renderer::AddTile(TileIndex tile, float dist)
 	auto ground = [&](Corner a, Corner b, Corner c) {
 		Vec3 normal = (p[b] - p[a]).Cross(p[c] - p[a]);
 		if (normal.z < 0) normal = normal * -1;
-		this->AddTriangle({v[a], v[b], v[c]}, {&tex, {}, Shade(normal), 0, 1.0f});
+		this->AddTriangle({v[a], v[b], v[c]}, {&tex, {}, Shade(normal), 0, 1.0f, false, true});
 	};
 	/* A river going down a slope goes down in steps, see AddCascade. */
 	const bool cascade = drop != 0 && IsTileType(tile, MP_WATER) && IsInclinedSlope(raw_slope);
@@ -3936,7 +4315,7 @@ void Renderer::AddRoad(TileIndex tile, const RoadLook &look, const GroundTexture
 		/* The pavements are the ground of the tile raised by the height of the kerb, so they keep their picture. */
 		Vec3 normal = (at({TILE, 0}, 0) - at({0, 0}, 0)).Cross(at({0, TILE}, 0) - at({0, 0}, 0));
 		if (normal.z < 0) normal = normal * -1;
-		const Paint paint = {&tex, {}, Shade(normal), 0, 1.0f};
+		const Paint paint = {&tex, {}, Shade(normal), 0, 1.0f, false, true};
 		auto vertex = [&](Point2 p) {
 			const Vec3 w = at(p, KERB_HEIGHT);
 			ClipVertex v;
