@@ -118,30 +118,107 @@ function CabTestAI::BuildBus(cx, cy, pass)
 	return bus;
 }
 
-/** Ship sailing between two buoys on a canal, three tiles wide, with a depot at its side. */
-function CabTestAI::BuildShip(cx, cy)
+/**
+ * Two ships sailing in opposite directions between two buoys on a canal, two tiles wide, with a depot at each end.
+ * Halfway the canal goes up a level through two locks; a road bridge crosses the lower part, a rail bridge the upper part.
+ */
+function CabTestAI::BuildShip(cx, cy, pass)
 {
-	local a = this.FindArea(cx, cy, 18, 3, 14);
+	local W = 28;
+	local a = this.FindArea(cx, cy, W, 4, 14);
 	if (a == null) { AILog.Error("NO SHIP AREA"); return null; }
-	local x0 = a[0], y0 = a[1];
-	for (local y = y0; y < y0 + 3; y++) {
-		for (local x = x0; x < x0 + 18; x++) this.Must(AIMarine.BuildCanal(AIMap.GetTileIndex(x, y)), "canal " + x + "," + y);
+	local x0 = a[0], y0 = a[1], xm = x0 + 14;
+	this.RaiseCorners(xm + 1, y0, x0 + W, y0 + 4);
+	foreach (y in [y0 + 1, y0 + 2]) this.Must(AIMarine.BuildLock(AIMap.GetTileIndex(xm, y)), "lock " + xm + "," + y);
+	for (local y = y0 + 1; y <= y0 + 2; y++) {
+		for (local x = x0; x < x0 + W; x++) {
+			if (x >= xm - 1 && x <= xm + 1) continue;
+			this.Must(AIMarine.BuildCanal(AIMap.GetTileIndex(x, y)), "canal " + x + "," + y);
+		}
 	}
+	/* A depot at each end, so the ships meet on the way. */
+	local depots = [];
+	foreach (dx in [1, W - 5]) {
+		for (local x = x0 + dx; x <= x0 + dx + 3; x++) this.Must(AIMarine.BuildCanal(AIMap.GetTileIndex(x, y0 + 3)), "canal " + x + "," + (y0 + 3));
+		local tDepot = AIMap.GetTileIndex(x0 + dx + 1, y0 + 3);
+		this.Must(AIMarine.BuildWaterDepot(tDepot, AIMap.GetTileIndex(x0 + dx + 2, y0 + 3)), "ship depot");
+		depots.append(tDepot);
+	}
+	/* A dock on the slope beside the locks; its water, two tiles of it, by the lower canal. */
+	foreach (x in [xm - 2, xm - 1]) this.Must(AIMarine.BuildCanal(AIMap.GetTileIndex(x, y0 + 3)), "dock canal");
+	if (this.Must(AIMarine.BuildDock(AIMap.GetTileIndex(xm, y0 + 3), AIStation.STATION_NEW), "dock")) AILog.Info("DOCK " + AIMap.GetTileIndex(xm, y0 + 3));
+
+	local types = AIBridgeList_Length(4);
+	if (!types.IsEmpty() && this.Must(AIBridge.BuildBridge(AIVehicle.VT_ROAD, types.Begin(), AIMap.GetTileIndex(x0 + 7, y0), AIMap.GetTileIndex(x0 + 7, y0 + 3)), "road bridge over canal")) {
+		AIRoad.BuildRoad(AIMap.GetTileIndex(x0 + 7, y0 - 2), AIMap.GetTileIndex(x0 + 7, y0));
+		AIRoad.BuildRoad(AIMap.GetTileIndex(x0 + 7, y0 + 3), AIMap.GetTileIndex(x0 + 7, y0 + 5));
+	}
+	this.BuildRailBridge(AIMap.GetTileIndex(x0 + 21, y0), AIMap.GetTileIndex(x0 + 21, y0 + 3), 1);
+	/* Trees along the banks. */
+	for (local x = x0; x < x0 + W; x += 2) {
+		foreach (y in [y0 - 1, y0 + 4]) AITile.PlantTree(AIMap.GetTileIndex(x, y));
+	}
+
 	local tA = AIMap.GetTileIndex(x0 + 1, y0 + 1);
-	local tB = AIMap.GetTileIndex(x0 + 16, y0 + 1);
+	local tB = AIMap.GetTileIndex(x0 + W - 2, y0 + 2);
 	this.Must(AIMarine.BuildBuoy(tA), "buoy A");
 	this.Must(AIMarine.BuildBuoy(tB), "buoy B");
-	local tDepot = AIMap.GetTileIndex(x0 + 8, y0 + 2);
-	this.Must(AIMarine.BuildWaterDepot(tDepot, AIMap.GetTileIndex(x0 + 9, y0 + 2)), "ship depot");
 
-	local engine = this.PickEngine(AIVehicle.VT_WATER, null);
+	/* A ferry rather than the fastest, the low hovercraft. */
+	local engines = AIEngineList(AIVehicle.VT_WATER);
+	engines.Valuate(AIEngine.IsBuildable); engines.KeepValue(1);
+	engines.Valuate(AIEngine.CanRefitCargo, pass); engines.KeepValue(1);
+	engines.Valuate(AIEngine.GetMaxSpeed); engines.Sort(AIList.SORT_BY_VALUE, false);
+	if (engines.Count() > 1) engines.RemoveItem(engines.Begin());
+	local engine = engines.IsEmpty() ? this.PickEngine(AIVehicle.VT_WATER, null) : engines.Begin();
 	if (engine == null) { AILog.Error("NO SHIP ENGINE"); return null; }
-	local ship = AIVehicle.BuildVehicle(tDepot, engine);
-	if (!this.Must(AIVehicle.IsValidVehicle(ship), "build ship")) return null;
-	this.Must(AIOrder.AppendOrder(ship, tA, AIOrder.OF_NONE), "ship order A");
-	this.Must(AIOrder.AppendOrder(ship, tB, AIOrder.OF_NONE), "ship order B");
-	this.Must(AIVehicle.StartStopVehicle(ship), "start ship");
-	AILog.Info("SHIP " + ship + " A=" + tA + " B=" + tB + " " + AIEngine.GetName(engine));
+	local ships = [];
+	foreach (i, orders in [[tA, tB], [tB, tA]]) {
+		local ship = AIVehicle.BuildVehicle(depots[i], engine);
+		if (!this.Must(AIVehicle.IsValidVehicle(ship), "build ship")) continue;
+		foreach (t in orders) this.Must(AIOrder.AppendOrder(ship, t, AIOrder.OF_NONE), "ship order");
+		this.Must(AIVehicle.StartStopVehicle(ship), "start ship");
+		AILog.Info((i == 0 ? "SHIP " : "SHIP2 ") + ship + " A=" + tA + " B=" + tB + " lock " + xm + "," + (y0 + 1) + " " + AIEngine.GetName(engine));
+		ships.append(ship);
+	}
+	return ships.len() > 0 ? ships[0] : null;
+}
+
+/** Ship sailing between two docks on the coast, when the map has sea near (cx, cy). */
+function CabTestAI::BuildSeaShip(cx, cy, pass)
+{
+	local docks = [];
+	for (local d = 4; d < 80 && docks.len() < 2; d += 2) {
+		for (local i = -d; i <= d && docks.len() < 2; i += 2) {
+			foreach (p in [[cx + i, cy - d], [cx + i, cy + d], [cx - d, cy + i], [cx + d, cy + i]]) {
+				local t = AIMap.GetTileIndex(p[0], p[1]);
+				if (!AIMap.IsValidTile(t) || !AITile.IsCoastTile(t)) continue;
+				if (docks.len() == 1 && AIMap.DistanceManhattan(t, docks[0]) < 25) continue;
+				if (AIMarine.BuildDock(t, AIStation.STATION_NEW)) { docks.append(t); AILog.Info("SEADOCK " + t); break; }
+			}
+		}
+	}
+	if (docks.len() < 2) { AILog.Warning("NO SEA DOCKS"); return null; }
+	/* A depot on open sea near the first dock. */
+	local depot = null;
+	for (local d = 2; d < 12 && depot == null; d++) {
+		local x = AIMap.GetTileX(docks[0]), y = AIMap.GetTileY(docks[0]);
+		foreach (p in [[x + d, y], [x - d, y], [x, y + d], [x, y - d]]) {
+			local t = AIMap.GetTileIndex(p[0], p[1]);
+			if (AIMarine.BuildWaterDepot(t, AIMap.GetTileIndex(p[0] + 1, p[1]))) { depot = t; break; }
+		}
+	}
+	if (depot == null) { AILog.Warning("NO SEA DEPOT"); return null; }
+	local engines = AIEngineList(AIVehicle.VT_WATER);
+	engines.Valuate(AIEngine.IsBuildable); engines.KeepValue(1);
+	engines.Valuate(AIEngine.CanRefitCargo, pass); engines.KeepValue(1);
+	engines.Valuate(AIEngine.GetMaxSpeed); engines.Sort(AIList.SORT_BY_VALUE, false);
+	if (engines.IsEmpty()) return null;
+	local ship = AIVehicle.BuildVehicle(depot, engines.Begin());
+	if (!this.Must(AIVehicle.IsValidVehicle(ship), "build sea ship")) return null;
+	foreach (t in docks) this.Must(AIOrder.AppendOrder(ship, t, AIOrder.OF_NONE), "sea ship order");
+	this.Must(AIVehicle.StartStopVehicle(ship), "start sea ship");
+	AILog.Info("SEASHIP " + ship + " " + AIEngine.GetName(engines.Begin()));
 	return ship;
 }
 
@@ -349,7 +426,8 @@ function CabTestAI::Start()
 
 	/* Other vehicle types, to try the cab view with. */
 	local bus = this.BuildBus(x0, y0, pass);
-	this.BuildShip(x0, y0);
+	this.BuildShip(x0, y0, pass);
+	this.BuildSeaShip(x0, y0, pass);
 	this.BuildPlane(x0, y0, pass);
 
 	/* After a while, sell the bus, to see its cab view close. */

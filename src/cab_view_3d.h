@@ -5,7 +5,7 @@
  * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file cab_view_3d.h Software rendered 3D view from the cab of a train or an aircraft. */
+/** @file cab_view_3d.h Software rendered 3D view from the cab of a train, a ship or an aircraft. */
 
 #ifndef CAB_VIEW_3D_H
 #define CAB_VIEW_3D_H
@@ -16,6 +16,10 @@
 
 /** Smallest size of the picture of the 3D view compared to the view, when drawing at full size takes too long. */
 constexpr float CAB_VIEW_3D_MIN_SCALE = 0.5f;
+/** How far below the level of its tile the 3D view shows the surface of water, so canals, rivers and the sea have banks. */
+constexpr int CAB_VIEW_3D_WATER_DROP = 1;
+/** Height of the eye of the 3D view from a ship above the water. */
+constexpr float CAB_VIEW_3D_SHIP_EYE = 4.0f;
 
 /** Where the camera of the 3D cab view is and where it looks. */
 struct CabViewCamera {
@@ -34,6 +38,7 @@ struct CabViewCamera {
 
 void DrawCabView3D(const Rect &r, const CabViewCamera &camera, uint32_t frame_id, float budget_ms);
 float GetCabView3DFrameTime(float scale);
+float GetCabView3DShipWaterZ(const Vehicle *v);
 void ResetCabView3D();
 
 #endif /* CAB_VIEW_3D_H */
