@@ -33,7 +33,11 @@ Every package already contains the free base sets OpenGFX (graphics), OpenSFX (s
 - **Multiplayer** works only with players running the same alpha build.
 - The 3D view is drawn by the processor, without the graphics card. On a recent computer it runs smoothly; if it stutters, make the Cab view window smaller.
 - Only the default graphics are tested. NewGRF vehicles and buildings are shown, but may look odd.
-- Not yet: HD graphics, catenary, smoke and night lights.
+- Not yet: catenary, smoke and night lights.
+
+## Coming next: HD graphics
+
+The next step is support for high resolution base graphics (like OpenGFX2 High Def) in the 3D view, for much sharper ground, buildings and vehicles on large and Retina screens. It will be optional: the default graphics keep working.
 
 SHA-256 checksums of all files are in `SHA256SUMS.txt`.
 
@@ -52,5 +56,7 @@ Je to **alfa verze**, první zkušební sestavení založené na OpenTTD 15.3. N
 **Instalace:** stáhněte soubor pro svůj systém, rozbalte ho a spusťte. Grafika, zvuky i hudba jsou přibalené. Nainstalované OpenTTD to nepřepíše, nastavení a uložené hry jsou společné.
 
 **Sestavení nejsou podepsaná.** Na Macu při prvním spuštění otevřete *Nastavení systému > Soukromí a zabezpečení* a klikněte na *Přesto otevřít*. Ve Windows klikněte na *Další informace* a *Přesto spustit*.
+
+**Další krok: HD grafika.** 3D pohled dostane podporu grafiky ve vysokém rozlišení (třeba OpenGFX2 High Def), takže země, budovy i vozidla budou na velkých a Retina displejích mnohem ostřejší. Bude volitelná, výchozí grafika zůstane.
 
 Uložené hry jsou plně kompatibilní s OpenTTD 15.3. Hra po síti funguje jen s hráči, kteří mají stejnou alfa verzi.
