@@ -44,10 +44,17 @@ foreach(MOD_NAME IN LISTS ICU_FIND_COMPONENTS)
     foreach(LIBRARY IN LISTS PC_ICU_${MOD_NAME}_LIBRARIES)
         unset(PC_LIBRARY CACHE)
         find_library(PC_LIBRARY NAMES ${LIBRARY})
-        if(NOT PC_LIBRARY)
+        if(PC_LIBRARY)
+            list(APPEND PC_LIBRARIES ${PC_LIBRARY})
+        elseif(LIBRARY MATCHES "^(stdc\\+\\+|c\\+\\+|m|dl|pthread)$")
+            # Static ICU from vcpkg also lists the system libraries it needs,
+            # like stdc++; those the linker finds itself, but find_library
+            # does not always (e.g. with a GCC toolset in /opt).
+            list(APPEND PC_LIBRARIES ${LIBRARY})
+        else()
             unset(PC_ICU_${MOD_NAME}_FOUND)
+            unset(PC_ICU_${MOD_NAME}_FOUND CACHE)
         endif()
-        list(APPEND PC_LIBRARIES ${PC_LIBRARY})
     endforeach()
     unset(PC_LIBRARY CACHE)
 
