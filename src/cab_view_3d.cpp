@@ -167,6 +167,7 @@ constexpr std::array<std::pair<float, float>, DIR_END> HEADINGS = {{
 }};
 
 constexpr size_t MAX_TEXTURES = 4096; ///< Clear the texture cache when it grows beyond this.
+constexpr size_t MAX_FINE_BYTES = 512 << 20; ///< Clear the texture cache when its detailed textures take more bytes than this.
 constexpr size_t MAX_NEW_TEXTURES_TIMED = 32; ///< Pictures that make more new textures don't count for the average time of a picture.
 constexpr int MAX_THREADS = 8; ///< At most this many threads draw the picture.
 constexpr int PICTURES_PER_SCALE = 10; ///< Pictures to draw at a size before changing it again, so it does not keep changing.
@@ -275,9 +276,55 @@ struct RawSprite {
 	int x_offs = 0; ///< Horizontal offset of the top left pixel.
 	int y_offs = 0; ///< Vertical offset of the top left pixel.
 	std::vector<SpriteLoader::CommonPixel> pixels; ///< The pixels, row by row.
+
+	/* The sprite at four times the resolution, only when the graphics have more detail at that zoom
+	 * level than at the normal one, like the extra zoom base sets have; sizes and offsets are in those pixels. */
+	int fine_width = 0; ///< Width of the detailed sprite in pixels.
+	int fine_height = 0; ///< Height of the detailed sprite in pixels.
+	int fine_x_offs = 0; ///< Horizontal offset of the top left pixel of the detailed sprite.
+	int fine_y_offs = 0; ///< Vertical offset of the top left pixel of the detailed sprite.
+	std::vector<SpriteLoader::CommonPixel> fine_pixels; ///< The pixels of the detailed sprite, row by row; empty without one.
+
+	/** Whether the graphics have more detail for the sprite than its normal zoom level shows. */
+	bool HasFine() const { return !this->fine_pixels.empty(); }
 };
 
-/** Sprite "encoder" that keeps the sprite as it was loaded, at the normal zoom level. */
+/**
+ * Whether a sprite at the closest zoom level has more detail than at the normal one, or is just
+ * the normal one blown up, as the game makes it when the graphics have nothing more.
+ * @param normal The sprite at the normal zoom level.
+ * @param fine The sprite at the closest zoom level.
+ * @return True when it has detail of its own.
+ */
+static bool HasMoreDetail(const SpriteLoader::Sprite &normal, const SpriteLoader::Sprite &fine)
+{
+	if (normal.data == nullptr || fine.data == nullptr) return false;
+	const int zoom = static_cast<int>(ZOOM_BASE);
+	for (int y = 0; y < fine.height; y++) {
+		const int ny = FloorDiv(y + fine.y_offs, zoom) - normal.y_offs;
+		for (int x = 0; x < fine.width; x++) {
+			const SpriteLoader::CommonPixel &f = fine.data[static_cast<size_t>(y) * fine.width + x];
+			const int nx = FloorDiv(x + fine.x_offs, zoom) - normal.x_offs;
+			if (nx < 0 || ny < 0 || nx >= normal.width || ny >= normal.height) {
+				if (f.a != 0) return true;
+				continue;
+			}
+			const SpriteLoader::CommonPixel &n = normal.data[static_cast<size_t>(ny) * normal.width + nx];
+			if (f.r != n.r || f.g != n.g || f.b != n.b || f.a != n.a || f.m != n.m) return true;
+		}
+	}
+	return false;
+}
+
+/** A sprite put into a texture, see #AddFineLevels. */
+struct PlacedSprite {
+	const RawSprite *raw; ///< The sprite.
+	PaletteID pal; ///< Its palette.
+	int x; ///< Column where the viewport draws the sprite, before its offsets, relative to the texture like #GroundTexture::left.
+	int y; ///< Row where the viewport draws the sprite, before its offsets, relative to the texture like #GroundTexture::top.
+};
+
+/** Sprite "encoder" that keeps the sprite as it was loaded, at the normal zoom level, and at the closest when it has more detail there. */
 class RawSpriteEncoder : public SpriteEncoder {
 public:
 	RawSprite *target = nullptr; ///< Where to store the sprite.
@@ -294,6 +341,16 @@ public:
 		this->target->x_offs = src.x_offs;
 		this->target->y_offs = src.y_offs;
 		if (src.data != nullptr) this->target->pixels.assign(src.data, src.data + static_cast<size_t>(src.width) * src.height);
+
+		/* Graphics with extra zoom levels have more detail closer in; keep it for seeing things up close. */
+		const SpriteLoader::Sprite &fine = sprite[ZoomLevel::Min];
+		if (HasMoreDetail(src, fine)) {
+			this->target->fine_width = fine.width;
+			this->target->fine_height = fine.height;
+			this->target->fine_x_offs = fine.x_offs;
+			this->target->fine_y_offs = fine.y_offs;
+			this->target->fine_pixels.assign(fine.data, fine.data + static_cast<size_t>(fine.width) * fine.height);
+		}
 
 		Sprite *s = allocator.Allocate<Sprite>(sizeof(Sprite));
 		s->width = src.width;
@@ -388,6 +445,8 @@ struct Picture {
 
 /** Number of smaller versions of a ground texture, used further away so the ground does not glitter. */
 constexpr int TEXTURE_LEVELS = 4;
+/** Number of more detailed versions of a texture, at four and two times the resolution, for graphics with extra zoom levels. */
+constexpr int FINE_LEVELS = 2;
 
 /**
  * The ground sprites of a tile put together, in normal zoom screen pixels.
@@ -409,6 +468,8 @@ struct GroundTexture {
 	int left = 0; ///< Screen column of the first pixel, relative to the north corner of the tile.
 	int top = 0; ///< Screen row of the first pixel, relative to the north corner of the tile at its height.
 	std::array<Picture, TEXTURE_LEVELS> levels; ///< The picture, and versions of half, a quarter... the size.
+	std::array<Picture, FINE_LEVELS> fine; ///< The picture at four and two times the resolution, when the graphics have the detail for it.
+	int fine_levels = 0; ///< How many of #fine there are; texture levels go down to minus this.
 	RGB mean = {0, 0, 0}; ///< Average colour of the opaque pixels.
 	std::vector<Material> material; ///< What the ground is made of at each pixel of the picture; empty for things other than the ground, or when it is the same everywhere.
 	Material uniform_material = Material::None; ///< What the ground is made of, when #material is empty.
@@ -437,8 +498,23 @@ struct GroundTexture {
 	 */
 	RGB Sample(float col, float row, int level) const
 	{
+		if (level < 0) {
+			float scale = static_cast<float>(1 << -level);
+			return this->fine[FINE_LEVELS + level].Sample((col - this->left) * scale, (row - this->top) * scale);
+		}
 		float scale = 1.0f / (1 << level);
 		return this->levels[level].Sample((col - this->left) * scale, (row - this->top) * scale);
+	}
+
+	/**
+	 * Size of the more detailed versions of the picture.
+	 * @return The size in bytes.
+	 */
+	size_t FineBytes() const
+	{
+		size_t bytes = 0;
+		for (int i = 0; i < this->fine_levels; i++) bytes += this->fine[i].pixels.size() * sizeof(RGB) + this->fine[i].alpha.size() * sizeof(float);
+		return bytes;
 	}
 
 	/**
@@ -450,6 +526,10 @@ struct GroundTexture {
 	 */
 	float SampleAlpha(float col, float row, int level) const
 	{
+		if (level < 0) {
+			float scale = static_cast<float>(1 << -level);
+			return this->fine[FINE_LEVELS + level].SampleAlpha((col - this->left) * scale, (row - this->top) * scale);
+		}
 		float scale = 1.0f / (1 << level);
 		return this->levels[level].SampleAlpha((col - this->left) * scale, (row - this->top) * scale);
 	}
@@ -598,6 +678,7 @@ public:
 		this->sprites.clear();
 		this->textures.clear();
 		this->box_textures.clear();
+		this->fine_bytes = 0;
 		this->building_shapes.clear();
 		this->frame = {};
 		this->depth = {};
@@ -626,6 +707,8 @@ private:
 	std::unordered_map<SpriteID, RawSprite> sprites; ///< Sprites loaded so far.
 	std::unordered_map<std::vector<int32_t>, GroundTexture, TextureKeyHash> textures; ///< Ground textures put together so far.
 	std::unordered_map<uint64_t, GroundTexture> box_textures; ///< Textures of sprites standing in boxes, by sprite and palette.
+	size_t fine_bytes = 0; ///< Bytes taken by the detailed versions of the textures, see #AddFineLevels.
+	std::vector<PlacedSprite> placed; ///< Scratch list of the sprites of a texture being made.
 	std::map<std::tuple<SpriteID, PaletteID, int, int, int, int, int, bool>, BuildingShape> building_shapes; ///< Shapes of buildings worked out so far, see #GetBuildingShape.
 	std::vector<GroundSpriteToDraw> ground_sprites; ///< Scratch buffer for collecting ground sprites.
 	std::vector<BoxSpriteToDraw> box_sprites; ///< Scratch buffer for collecting sprites standing in boxes.
@@ -773,11 +856,12 @@ enum class SkipPixels : uint8_t {
  * @param pic The picture; it has no opacity.
  * @param dx Columns the line spans.
  * @param dy Rows the line spans.
+ * @param density Samples per pixel along the line.
  * @return The smoothed picture.
  */
-static Picture SmoothAlong(const Picture &pic, float dx, float dy)
+static Picture SmoothAlong(const Picture &pic, float dx, float dy, float density = 2)
 {
-	int samples = std::max(2, static_cast<int>(std::ceil(std::max(std::abs(dx), std::abs(dy)) * 2)));
+	int samples = std::max(2, static_cast<int>(std::ceil(std::max(std::abs(dx), std::abs(dy)) * density)));
 	Picture smooth = pic;
 	for (int y = 0; y < pic.height; y++) {
 		for (int x = 0; x < pic.width; x++) {
@@ -1347,14 +1431,21 @@ static GroundTexture MakeHedgeTexture(std::optional<RGB> flowers)
  * @param ox Column of the picture for the top left pixel of the sprite.
  * @param oy Row of the picture for the top left pixel of the sprite.
  * @param skip Which pixels to leave out.
+ * @param fine Whether to paint the more detailed version of the sprite, see #RawSprite::fine_pixels; then the
+ *             picture and the column and row are in its pixels.
  */
-static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite &raw, PaletteID pal, int ox, int oy, SkipPixels skip = SkipPixels::None)
+static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite &raw, PaletteID pal, int ox, int oy, SkipPixels skip = SkipPixels::None, bool fine = false)
 {
 	const uint8_t *remap = (pal != PAL_NONE) ? GetNonSprite(GB(pal, 0, PALETTE_WIDTH), SpriteType::Recolour) + 1 : nullptr;
-	for (int y = 0; y < raw.height; y++) {
-		for (int x = 0; x < raw.width; x++) {
-			const SpriteLoader::CommonPixel &p = raw.pixels[y * raw.width + x];
+	const int width = fine ? raw.fine_width : raw.width;
+	const int height = fine ? raw.fine_height : raw.height;
+	const std::vector<SpriteLoader::CommonPixel> &pixels = fine ? raw.fine_pixels : raw.pixels;
+	for (int y = 0; y < height; y++) {
+		for (int x = 0; x < width; x++) {
+			const SpriteLoader::CommonPixel &p = pixels[y * width + x];
 			if (p.a == 0) continue;
+			/* The detailed version may stick out by a few pixels, as the game rounds its offsets. */
+			if (ox + x < 0 || oy + y < 0 || ox + x >= pic.width || oy + y >= pic.height) continue;
 			if (skip == SkipPixels::UnderBuilding && IsUnderBuilding(p)) continue;
 			if (skip == SkipPixels::RoadLine && IsRoadLine(p)) continue;
 			RGB c;
@@ -1370,6 +1461,86 @@ static void PaintSprite(Picture &pic, std::vector<float> &alpha, const RawSprite
 			alpha[idx] = a + alpha[idx] * (1 - a);
 		}
 	}
+}
+
+/**
+ * Finish a more detailed picture that has been painted, like #FinishTexture, but quicker: its transparent pixels
+ * take the colour of the finished picture at the normal zoom level, which has been grown already.
+ * @param pic The detailed picture.
+ * @param alpha Opacity of the pixels of the picture.
+ * @param coarse The finished picture at the normal zoom level.
+ * @param keep_alpha Whether to keep the opacity, for leaving out the transparent pixels when drawing.
+ * @param smooth How far to smooth the picture, in its pixels, see #SmoothAlong; nothing when zero.
+ * @param widen By how many pixels to widen the opaque area; 0 for cut-outs.
+ */
+static void FinishFinePicture(Picture &pic, std::vector<float> alpha, const Picture &coarse, bool keep_alpha, std::pair<float, float> smooth, int widen)
+{
+	if (keep_alpha) {
+		/* Widen the opaque area in two passes, first along the rows, then along the columns. */
+		std::vector<float> rows = alpha;
+		for (int y = 0; y < pic.height; y++) {
+			for (int x = 0; x < pic.width; x++) {
+				float &a = rows[static_cast<size_t>(y) * pic.width + x];
+				for (int nx = std::max(0, x - widen); nx <= std::min(pic.width - 1, x + widen); nx++) a = std::max(a, alpha[static_cast<size_t>(y) * pic.width + nx]);
+			}
+		}
+		pic.alpha = rows;
+		for (int y = 0; y < pic.height; y++) {
+			for (int x = 0; x < pic.width; x++) {
+				float &a = pic.alpha[static_cast<size_t>(y) * pic.width + x];
+				for (int ny = std::max(0, y - widen); ny <= std::min(pic.height - 1, y + widen); ny++) a = std::max(a, rows[static_cast<size_t>(ny) * pic.width + x]);
+			}
+		}
+	}
+
+	const float zoom = static_cast<float>(ZOOM_BASE);
+	for (int y = 0; y < pic.height; y++) {
+		for (int x = 0; x < pic.width; x++) {
+			const size_t idx = static_cast<size_t>(y) * pic.width + x;
+			if (alpha[idx] > 0) {
+				pic.pixels[idx] = pic.pixels[idx] * (1.0f / alpha[idx]);
+			} else {
+				pic.pixels[idx] = coarse.Sample((x + 0.5f) / zoom, (y + 0.5f) / zoom);
+			}
+		}
+	}
+	/* As many samples as along the line in the normal picture; that is plenty, and much quicker. */
+	if (smooth.first != 0 || smooth.second != 0) pic = SmoothAlong(pic, smooth.first, smooth.second, 2 / zoom);
+}
+
+/**
+ * Add the more detailed versions of a finished texture, when the graphics of all its sprites have more detail
+ * than the normal zoom level shows, like the extra zoom base sets. They show up close; further away and with
+ * other graphics the texture is the same as before.
+ * @param tex The finished texture.
+ * @param sprites The sprites painted into it, bottom first.
+ * @param skip Which pixels to leave out.
+ * @param keep_alpha Whether to keep the opacity.
+ * @param smooth How far to smooth the picture, in normal pixels.
+ * @param widen Whether to widen the opaque area.
+ * @return Size of the detailed versions in bytes.
+ */
+static size_t AddFineLevels(GroundTexture &tex, std::span<const PlacedSprite> sprites, SkipPixels skip, bool keep_alpha, std::pair<float, float> smooth = {0, 0}, bool widen = true)
+{
+	if (sprites.empty() || tex.levels[0].pixels.size() <= 1) return 0;
+	if (!std::ranges::all_of(sprites, [](const PlacedSprite &s) { return s.raw->pixels.empty() || s.raw->HasFine(); })) return 0;
+	if (std::ranges::none_of(sprites, [](const PlacedSprite &s) { return s.raw->HasFine(); })) return 0;
+
+	const int zoom = static_cast<int>(ZOOM_BASE);
+	Picture pic;
+	pic.width = tex.levels[0].width * zoom;
+	pic.height = tex.levels[0].height * zoom;
+	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, {0, 0, 0});
+	std::vector<float> alpha(pic.pixels.size(), 0.0f);
+	for (const PlacedSprite &s : sprites) {
+		if (!s.raw->HasFine()) continue;
+		PaintSprite(pic, alpha, *s.raw, s.pal, (s.x - tex.left) * zoom + s.raw->fine_x_offs, (s.y - tex.top) * zoom + s.raw->fine_y_offs, skip, true);
+	}
+	FinishFinePicture(pic, std::move(alpha), tex.levels[0], keep_alpha, {smooth.first * zoom, smooth.second * zoom}, widen ? zoom : 0);
+	tex.fine[0] = std::move(pic);
+	for (int level = 1; level < FINE_LEVELS; level++) tex.fine[level] = tex.fine[level - 1].Halve();
+	tex.fine_levels = FINE_LEVELS;
+	return tex.FineBytes();
 }
 
 /** How the 3D view draws a road tile, see Renderer::AddRoad. */
@@ -1566,13 +1737,16 @@ const GroundTexture &Renderer::GetGroundTexture(TileIndex tile, int tile_z, bool
 	bool building = IsTileType(tile, MP_HOUSE) || IsTileType(tile, MP_INDUSTRY) || IsTileType(tile, MP_OBJECT);
 
 	/* Put the sprites on top of each other, like the viewport draws them. */
+	const SkipPixels skip = building ? SkipPixels::UnderBuilding : road_line ? SkipPixels::RoadLine : SkipPixels::None;
+	this->placed.clear();
 	for (size_t i = 0; i < sprite_keys; i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
-		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top,
-				building ? SkipPixels::UnderBuilding : road_line ? SkipPixels::RoadLine : SkipPixels::None);
+		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top, skip);
+		this->placed.push_back({&raw, static_cast<PaletteID>(this->key[i + 1]), this->key[i + 2], this->key[i + 3]});
 	}
 
 	FinishTexture(tex, std::move(alpha), building ? MAX_FILL_PASSES : 4, false, smooth);
+	this->fine_bytes += AddFineLevels(tex, this->placed, skip, false, smooth);
 	const bool track = IsTileType(tile, MP_RAILWAY) || IsRailStationTile(tile) ||
 			(IsTileType(tile, MP_TUNNELBRIDGE) && GetTunnelBridgeTransportType(tile) == TRANSPORT_RAIL);
 	const bool road = IsTileType(tile, MP_ROAD) || IsAnyRoadStopTile(tile) ||
@@ -1607,6 +1781,8 @@ const GroundTexture &Renderer::GetBoxTexture(SpriteID image, PaletteID pal, bool
 	std::vector<float> alpha(pic.pixels.size(), 0.0f);
 	PaintSprite(pic, alpha, raw, pal, 0, 0);
 	FinishTexture(tex, std::move(alpha), 4, true, {0, 0}, widen);
+	const PlacedSprite placed{&raw, pal, 0, 0};
+	this->fine_bytes += AddFineLevels(tex, {&placed, 1}, SkipPixels::None, true, {0, 0}, widen);
 	return tex;
 }
 
@@ -1650,11 +1826,14 @@ const GroundTexture &Renderer::GetCompositeTexture(std::span<const BoxSpriteToDr
 	pic.height = bottom - top;
 	pic.pixels.assign(static_cast<size_t>(pic.width) * pic.height, {0, 0, 0});
 	std::vector<float> alpha(pic.pixels.size(), 0.0f);
+	this->placed.clear();
 	for (size_t i = 1; i < this->key.size(); i += 4) {
 		const RawSprite &raw = this->GetRawSprite(this->key[i]);
 		PaintSprite(pic, alpha, raw, this->key[i + 1], this->key[i + 2] + raw.x_offs - left, this->key[i + 3] + raw.y_offs - top);
+		this->placed.push_back({&raw, static_cast<PaletteID>(this->key[i + 1]), this->key[i + 2], this->key[i + 3]});
 	}
 	FinishTexture(tex, std::move(alpha), 4, false);
+	this->fine_bytes += AddFineLevels(tex, this->placed, SkipPixels::None, false);
 	return tex;
 }
 
@@ -1749,7 +1928,9 @@ void Renderer::SetupTriangle(const ClipVertex &a, const ClipVertex &b, const Cli
 		/* Use a smaller version of the texture when many texture pixels fall on one screen pixel. */
 		float tex_area = std::abs((v[1]->a[0] - v[0]->a[0]) * (v[2]->a[1] - v[0]->a[1]) - (v[2]->a[0] - v[0]->a[0]) * (v[1]->a[1] - v[0]->a[1]));
 		float ratio = std::sqrt(tex_area / std::abs(area));
-		t.paint.level = ratio > 1 ? std::min(TEXTURE_LEVELS - 1, static_cast<int>(std::log2(ratio) + 0.5f)) : 0;
+		/* Up close, use a more detailed version when the graphics have one. */
+		const int level = static_cast<int>(std::floor(std::log2(std::max(ratio, 1e-6f)) + 0.5f));
+		t.paint.level = std::clamp(level, -paint.texture->fine_levels, TEXTURE_LEVELS - 1);
 	}
 	this->triangles.push_back(t);
 }
@@ -4735,6 +4916,12 @@ void Renderer::Draw(const Rect &r, const CabViewCamera &camera, uint32_t frame_i
 	auto start = std::chrono::steady_clock::now();
 	if (this->textures.size() >= MAX_TEXTURES) this->textures.clear();
 	if (this->box_textures.size() >= MAX_TEXTURES) this->box_textures.clear();
+	if (this->fine_bytes >= MAX_FINE_BYTES) {
+		/* The detailed textures of graphics with extra zoom levels are large; make them again as needed. */
+		this->textures.clear();
+		this->box_textures.clear();
+		this->fine_bytes = 0;
+	}
 	size_t old_textures = this->textures.size() + this->box_textures.size();
 
 	this->view_width = r.Width();

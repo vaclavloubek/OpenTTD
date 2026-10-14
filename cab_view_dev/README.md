@@ -278,6 +278,23 @@ Větev `cab-view` vychází z oficiálního tagu **15.3**. Jeden commit „Featu
 - Cena: v cloudu (polovičním rozlišení, 4 vlákna) vyplňování o ~2 ms (asi 30 %) pomalejší.
 - Ladění: dočasný příkaz konzole (jen v pracovním patchi, ne ve větvi) přepínal vzor a obarvení podle materiálu.
 
+### HD grafika (volitelný doplněk)
+
+- Se sadou základní grafiky, která má sprity ve 4× rozlišení (např. **OpenGFX2 High Def**, 32 bpp, extra zoom),
+  bere 3D pohled zblízka i tyto ostřejší sprity. S OpenGFX (výchozí) se nic nemění.
+- `RawSpriteEncoder` si kromě normálního zoomu nechá i nejbližší zoom (`ZoomLevel::Min`), ale jen když má víc
+  detailu (`HasMoreDetail`): hra jinak nejbližší zoom vyrábí zvětšením normálního. Respektuje to i nastavení
+  hráče „nejvyšší rozlišení spritů“.
+- Textura (`GroundTexture`) dostane navíc verze ve 4× a 2× rozlišení (`fine`), když mají všechny její sprity víc
+  detailu (`AddFineLevels`); výběr úrovně textury pak jde i do záporných čísel. Rozbor tvarů domů, materiály
+  země atd. dál pracují s normálním zoomem, takže geometrie se nemění.
+- Průhledné okraje 4× textury se berou z hotové 1× textury, vyhlazení podél trati má stejný počet vzorků jako 1×.
+  Cena (cloud, OpenGFX2 HD 0.8.1): první snímek po zapnutí 3D ~0,2 s místo ~0,1 s, za jízdy nejdelší příprava
+  snímku ~30 ms místo ~18 ms. Velké textury se hlídají limitem `MAX_FINE_BYTES` (512 MB).
+- OpenGFX2 HD má podle autorů ve 4× hotovou hlavně krajinu, stromy, vodu, koleje, silnice a mosty; domy
+  a vozidla většinou ne, ty zůstávají jako dřív. HD verze zatím není v obsahu ke stažení ve hře, jen na
+  `github.com/OpenTTD/OpenGFX2/releases` (soubor `OpenGFX2_HighDef-<verze>.tar` do složky `baseset`).
+
 ## Další kroky
 
 1. Mac: hotovou aplikaci sestavuje u každého PR workflow `cab-view-macos-app.yml` (artefakt
