@@ -241,17 +241,18 @@ riser(bar(2), bar(3), 0.09)
 roll(bar(2) + bt(2), bar(3))
 
 # Section starts in bars (must match the cut list in edit.py).
-RAIL, TUNNEL, ROAD, WATER, AIR, END, BARS_END = 3, 10, 12, 19, 26, 31, 35
+RAIL, TUNNEL, ROAD, WATER, AIR, END, BARS_END = 3, 12, 12, 19, 26, 31, 35
 
-# --- Rail: full groove from the 3D switch; the tunnel goes dark and quiet.
+# --- Rail: full groove from the 3D switch (TUNNEL == ROAD: no dark tunnel part in this cut).
 cymbal(bar(RAIL), 0.1)
 groove(RAIL, TUNNEL - RAIL, PROG_A)
 melody(RAIL, MEL_A)
-melody(RAIL + 4, MEL_A[:10], 0.055)
+melody(RAIL + 4, MEL_A, 0.055)
 dark = [(['A2', 'C3', 'E3', 'G3'], 'A1', 'E2'), (['E2', 'G#2', 'B2', 'D3'], 'E1', 'B1')]
-groove(TUNNEL, ROAD - TUNNEL, dark, drums='kick', bass_pat='long', comp=False)
-for k, (ch, r, f) in enumerate(dark):
-    pad(ch, bar(TUNNEL + k), BEAT * 4, 0.045)
+if TUNNEL < ROAD:
+    groove(TUNNEL, ROAD - TUNNEL, dark, drums='kick', bass_pat='long', comp=False)
+    for k, (ch, r, f) in enumerate(dark[:ROAD - TUNNEL]):
+        pad(ch, bar(TUNNEL + k), BEAT * 4, 0.045)
 roll(bar(ROAD - 1) + bt(2), bar(ROAD), 0.06, 0.16)
 
 # --- Road: bouncier bass, new tune.

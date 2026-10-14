@@ -2,13 +2,16 @@
 20 close aidebug
 40 close aidebug
 80 close aidebug
-0 move 1 xy 9000 9000
 0 follow 7
 1 zoomin
-240 cab 7
-240 close toolbar
-240 close status
-242 win cab 0 0 3840 2160
-420 3d
-3300 news First person view.\nAlpha coming soon.
-3720 quit
+0 move 1 xy 2400 1500
+420 move 70 veh 7
+500 click
+520 move 50 wid veh 17
+580 click
+590 close veh
+592 grow cab 40 0 88 3840 2024
+640 move 50 wid cab 8
+700 click
+710 move 40 xy 2500 1960
+3400 quit

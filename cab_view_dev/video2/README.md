@@ -4,7 +4,8 @@ Horizontal 4K/60 fps video (also 1080p), ~80 s: the map and the cab window in 2D
 then rail, road, water and air, ending with the in-game newspaper "Alpha coming soon" and an end card.
 
 Recording uses the frame-by-frame helper from the teaser (`src/cab_view_rec.cpp`, REC_SCRIPT/REC_PIPE, not for
-cab-view). New script commands: `cab <vehicle>`, `3d`, `zoomin`, `close toolbar|status`.
+cab-view). New script commands: `cab <vehicle>`, `3d`, `zoomin`, `close toolbar|status`, `grow <window> <frames> <x> <y> <w> <h>`.
+The mouse is visible: it clicks the train, the cab view button and 3D; the cab window then fills the screen between the toolbar and the status bar.
 Keep the status bar (move it off screen with `win status 0 2400 3840 48`): with it closed, no news window appears.
 Runs are deterministic per script, but not between scripts that differ (closing the status bar shifted timings),
 so every clip is cut from the run it was recorded in.

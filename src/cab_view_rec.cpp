@@ -19,6 +19,7 @@
  *   <frame> cab <vehicle id>             (open the cab view of the vehicle)
  *   <frame> zoomin                       (zoom the main view in)
  *   <frame> 3d                           (toggle the 3D view in the cab view)
+ *   <frame> grow <window> <frames> <x> <y> <w> <h> (move and resize a window smoothly)
  *   <frame> quit
  * Windows: main, veh (vehicle view), cab (cab view), news.
  */
@@ -70,6 +71,13 @@ struct RecState {
 	Point move_from{};
 	std::vector<std::string> move_target;
 	Point pos{0, 0};
+
+	/* Window resize in progress. */
+	int grow_start = -1;
+	int grow_frames = 0;
+	std::string grow_window;
+	int grow_from[4]{};
+	int grow_to[4]{};
 };
 
 RecState _rec;
@@ -157,6 +165,21 @@ void SetMouse(Point p)
 	_cursor.UpdateCursorPosition(p.x, p.y);
 }
 
+void PlaceWindow(Window *w, int x, int y, int width, int height)
+{
+	w->SetDirty();
+	int dx = x - w->left;
+	int dy = y - w->top;
+	w->left += dx;
+	w->top += dy;
+	if (w->viewport != nullptr) {
+		w->viewport->left += dx;
+		w->viewport->top += dy;
+	}
+	ResizeWindow(w, width - w->width, height - w->height);
+	w->SetDirty();
+}
+
 void Execute(const RecCommand &c)
 {
 	if (c.cmd == "move") {
@@ -181,17 +204,18 @@ void Execute(const RecCommand &c)
 	} else if (c.cmd == "win") {
 		Window *w = GetWindow(c.args[0]);
 		if (w == nullptr) return;
-		w->SetDirty();
-		int dx = std::stoi(c.args[1]) - w->left;
-		int dy = std::stoi(c.args[2]) - w->top;
-		w->left += dx;
-		w->top += dy;
-		if (w->viewport != nullptr) {
-			w->viewport->left += dx;
-			w->viewport->top += dy;
+		PlaceWindow(w, std::stoi(c.args[1]), std::stoi(c.args[2]), std::stoi(c.args[3]), std::stoi(c.args[4]));
+	} else if (c.cmd == "grow") {
+		Window *w = GetWindow(c.args[0]);
+		if (w == nullptr) return;
+		_rec.grow_window = c.args[0];
+		_rec.grow_start = _rec.frame;
+		_rec.grow_frames = std::max(1, std::stoi(c.args[1]));
+		int from[4] = {w->left, w->top, w->width, w->height};
+		for (int i = 0; i < 4; i++) {
+			_rec.grow_from[i] = from[i];
+			_rec.grow_to[i] = std::stoi(c.args[2 + i]);
 		}
-		ResizeWindow(w, std::stoi(c.args[3]) - w->width, std::stoi(c.args[4]) - w->height);
-		w->SetDirty();
 	} else if (c.cmd == "news") {
 		AddNewsItem(GetEncodedString(STR_JUST_RAW_STRING, c.args[0]), NewsType::General, NewsStyle::Normal, {NewsFlag::InColour});
 	} else if (c.cmd == "close") {
@@ -242,6 +266,15 @@ void RecBeginFrame()
 	if (_rec.frame == _rec.release_frame) {
 		_left_button_down = false;
 		_left_button_clicked = false;
+	}
+	if (_rec.grow_start >= 0) {
+		float t = std::min(1.0f, static_cast<float>(_rec.frame - _rec.grow_start) / _rec.grow_frames);
+		float e = 0.5f - 0.5f * std::cos(t * static_cast<float>(M_PI));
+		int r[4];
+		for (int i = 0; i < 4; i++) r[i] = _rec.grow_from[i] + static_cast<int>(std::lround((_rec.grow_to[i] - _rec.grow_from[i]) * e));
+		Window *w = GetWindow(_rec.grow_window);
+		if (w != nullptr) PlaceWindow(w, r[0], r[1], r[2], r[3]);
+		if (t >= 1.0f) _rec.grow_start = -1;
 	}
 	if (_rec.move_start >= 0) {
 		float t = std::min(1.0f, static_cast<float>(_rec.frame - _rec.move_start) / _rec.move_frames);

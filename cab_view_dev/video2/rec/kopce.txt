@@ -2,10 +2,10 @@
 20 close aidebug
 40 close aidebug
 80 close aidebug
-0 move 1 xy 9000 9000
-3 close toolbar
-3 close status
+0 move 1 xy 2500 1960
 5 cab 7
-10 win cab 0 0 3840 2160
-12 3d
+6 win cab 0 88 3840 2024
+8 move 6 wid cab 8
+16 click
+24 move 30 xy 2500 1960
 1000 quit

@@ -26,19 +26,19 @@ def f(bar):
 
 # (recording, first frame, bars). Bar sections must match music.py.
 CLIPS = [
-    ('mosty', 34, 3),      # 0: the map, the cab window opens in 2D; 3D switch exactly on bar 3
-    ('mosty', 420, 3),     # 3: rail: signals, truss bridge, river, level crossing
-    ('kopce', 140, 3),     # 6: town, station
-    ('mosty', 1650, 3),    # 9: bridge, tunnel (music goes dark at bar 10)
+    ('mosty', 314, 3),     # 0: the map; the cursor clicks the train, the cab view button, then 3D exactly on bar 3
+    ('mosty', 700, 3),     # 3: rail: tunnel, arch bridge, station
+    ('kopce', 340, 3),     # 6: signal, town station
+    ('mosty', 2060, 3),    # 9: river with a ship, signals, level crossing, truss bridge
     ('autobus', 2280, 4),  # 12: road: level crossing, tunnel
     ('autobus', 2880, 3),  # 16: into town
     ('lod', 1790, 3),      # 19: canal, bridge, into the lock
     ('lod', 2430, 1),      # 22: lifted up in the lock
     ('more', 960, 3),      # 23: sea, river mouth waterfall
-    ('letadlo', 160, 4),   # 26: take-off and climb over the river
-    ('letadlo', 1060, 1),  # 30: touch-down
+    ('letadlo', 200, 4),   # 26: take-off and climb over the river
+    ('letadlo', 1090, 1),  # 30: touch-down
 ]
-END_START = 2080           # 'end' recording: the newspaper pops up at 2160
+END_START = 2860           # 'end' recording: the newspaper pops up at 2940
 END_BARS = 4               # bars 31-35
 CARD = 4.5                 # end card after bar 35 (seconds)
 
@@ -84,8 +84,8 @@ def captions(sc=1):
     global SC
     SC = sc
     items = [
-        text(0.4, 2.6 * b, 'OpenTTD', 230, 'h*0.30'),
-        text(0.8, 2.6 * b, 'First person view', 130, 'h*0.30+h*0.13', font=REG),
+        text(0.3, 3.0, 'OpenTTD', 230, 'h*0.30'),
+        text(0.6, 3.0, 'First person view', 130, 'h*0.30+h*0.13', font=REG),
         text(3.25 * b, 5.6 * b, 'By rail', 150, 'h*0.08', x='w*0.05'),
         text(12.25 * b, 14.6 * b, 'By road', 150, 'h*0.08', x='w*0.05'),
         text(19.25 * b, 21.6 * b, 'By water', 150, 'h*0.08', x='w*0.05'),
@@ -161,11 +161,12 @@ if __name__ == '__main__':
     b = BAR
     # Game sounds: osfx_NN, NN = the hex number in the SND_ name (see src/sound_type.h).
     sfx = [
-        {'sound': 0x15, 't': (240 - 34) / 60, 'gain': 0.5},               # click: cab view button
+        {'sound': 0x15, 't': (500 - 314) / 60, 'gain': 0.5},              # click: the train
+        {'sound': 0x15, 't': (580 - 314) / 60, 'gain': 0.5},              # click: cab view button
         {'sound': 0x15, 't': 3 * b - 0.03, 'gain': 0.55},                 # click: 3D
         {'sound': 0x0A, 't': 3 * b + 0.1, 'gain': 0.35},                  # train horn
-        {'sound': 0x0E, 't': 5.2 * b, 'gain': 0.18, 'len': 1.5},          # level crossing
-        {'sound': 0x05, 't': 10.2 * b, 'gain': 0.25},                     # into the tunnel
+        {'sound': 0x05, 't': 3 * b + 1.0, 'gain': 0.25},                  # into the tunnel
+        {'sound': 0x0E, 't': 9 * b + 2.3, 'gain': 0.18, 'len': 1.5},      # level crossing
         {'sound': 0x1B, 't': 12 * b + 0.05, 'gain': 0.35},                # bus departs
         {'sound': 0x07, 't': 19 * b + 0.05, 'gain': 0.35},                # ferry horn
         {'sound': 0x09, 't': 26 * b + 0.05, 'gain': 0.35},                # jet take-off
