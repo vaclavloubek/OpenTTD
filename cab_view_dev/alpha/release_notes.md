@@ -41,7 +41,7 @@ The next step is support for high resolution base graphics (like OpenGFX2 High D
 
 SHA-256 checksums of all files are in `SHA256SUMS.txt`.
 
-Game sounds: OpenSFX (CC BY 3.0 / CC BY-SA 3.0). Graphics: OpenGFX (GPL v2). Music: OpenMSX (GPL v2). OpenTTD is licensed under the GPL v2; the source code of this build is in the `cab-view` branch of this repository.
+Graphics: OpenGFX (GPL v2). Sounds: OpenSFX (CC BY-SA 3.0, GPL v2 or CDDL 1.1). Music: OpenMSX (GPL v2). OpenTTD is licensed under the GPL v2; the source code of this build is in the `cab-view` branch of this repository.
 
 ---
 

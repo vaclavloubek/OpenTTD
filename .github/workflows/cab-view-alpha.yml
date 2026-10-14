@@ -45,7 +45,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: basesets
-        key: basesets-gfx${{ env.OPENGFX_VERSION }}-sfx${{ env.OPENSFX_VERSION }}-msx${{ env.OPENMSX_VERSION }}
+        key: basesets-v2-gfx${{ env.OPENGFX_VERSION }}-sfx${{ env.OPENSFX_VERSION }}-msx${{ env.OPENMSX_VERSION }}
 
     - name: Download base sets
       if: steps.cache.outputs.cache-hit != 'true'
@@ -58,6 +58,10 @@ jobs:
             https://cdn.openttd.org/${NAME}-releases/${VER}/${SET}-all.zip -o download/${SET}.zip
           unzip -o download/${SET}.zip -d basesets
         done
+        # The game reads graphics and sounds from a tar, but music only from
+        # plain files (the music drivers need the MIDI files on disk).
+        tar -xf basesets/openmsx-${OPENMSX_VERSION}.tar -C basesets
+        rm basesets/openmsx-${OPENMSX_VERSION}.tar
         ls -l basesets
 
     - name: Store base sets
