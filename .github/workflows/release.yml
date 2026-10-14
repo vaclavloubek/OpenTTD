@@ -18,6 +18,10 @@ jobs:
   source:
     name: Source
 
+    # Only the official repository can upload releases. On a fork, publishing
+    # a release (like the cab view alpha) must not start this pipeline.
+    if: github.repository == 'OpenTTD/OpenTTD'
+
     uses: ./.github/workflows/release-source.yml
     secrets: inherit
 

@@ -318,3 +318,18 @@ Síť je omezená: apt (archive.ubuntu.com), PyPI i cdn.openttd.org jsou blokova
   Pozor: `kill` hru neukončí, je potřeba `pkill -9 openttd`, jinak běží dvě hry přes sebe.
 - Ovládání: `python3 x.py click X Y`, `drag X1 Y1 X2 Y2`, `key F1`, `wheel X Y N`…; snímek obrazovky `import -display :99 -window root shot.png`
   nebo v konzoli hry příkaz `screenshot`. Konzole: `scrollto <tile>`, `pause`.
+
+## Alfa verze pro hráče
+
+Workflow `.github/workflows/cab-view-alpha.yml` postaví hru pro macOS (universal: Apple Silicon i Intel),
+Windows (x64) a Linux (generic x64, glibc 2.28) s přibalenou OpenGFX 8.0, OpenSFX 1.0.3 a OpenMSX 0.4.2.
+Nic není podepsané vývojářským certifikátem (macOS jen ad hoc).
+
+- **Vydání:** pushnout tag ve tvaru `15.3-cabview-alphaN` na commit v `cab-view`. Tag je zároveň verze, kterou
+  hra ukazuje. Workflow pak vytvoří **koncept** releasu (draft, prerelease) se všemi balíčky, `SHA256SUMS.txt`
+  a popisem z `cab_view_dev/alpha/release_notes.md`. Koncept vidí jen majitel repozitáře; zveřejní ho ručně
+  tlačítkem „Publish release“ na GitHubu.
+- PR, které mění workflow nebo `cab_view_dev/alpha/`, balíčky jen postaví (verze `15.3-cabview-alpha-test`).
+- `release.yml` (oficiální vydávání OpenTTD) se na forku nespouští, jinak by ho zveřejnění releasu rozjelo.
+- Hra nemění nic ve stavu hry ani v uložených hrách, takže savy jsou kompatibilní s 15.3 oběma směry. Po síti
+  se ale připojí jen ke stejné verzi (tagovaná verze musí sedět přesně).
