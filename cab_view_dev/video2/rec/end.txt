@@ -1,0 +1,12 @@
+0 close aidebug
+20 close aidebug
+40 close aidebug
+80 close aidebug
+0 move 1 xy 9000 9000
+3 close toolbar
+3 win status 0 2400 3840 48
+5 cab 7
+10 win cab 0 0 3840 2160
+12 3d
+2160 news First person view.\nAlpha coming soon.
+2600 quit

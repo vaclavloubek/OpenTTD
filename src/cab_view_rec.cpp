@@ -16,6 +16,9 @@
  *   <frame> follow <vehicle id>          (main view follows the vehicle)
  *   <frame> win <window> <x> <y> <w> <h> (move and resize a window)
  *   <frame> news <text, \n for a new line>
+ *   <frame> cab <vehicle id>             (open the cab view of the vehicle)
+ *   <frame> zoomin                       (zoom the main view in)
+ *   <frame> 3d                           (toggle the 3D view in the cab view)
  *   <frame> quit
  * Windows: main, veh (vehicle view), cab (cab view), news.
  */
@@ -35,6 +38,8 @@
 #include "table/strings.h"
 #include "map_func.h"
 #include "tile_map.h"
+#include "vehicle_gui.h"
+#include "widgets/cab_view_widget.h"
 
 #include <fstream>
 #include <sstream>
@@ -106,6 +111,8 @@ WindowClass GetClass(const std::string &name)
 	if (name == "cab") return WC_VEHICLE_CAB_VIEW;
 	if (name == "news") return WC_NEWS_WINDOW;
 	if (name == "aidebug") return WC_SCRIPT_DEBUG;
+	if (name == "toolbar") return WC_MAIN_TOOLBAR;
+	if (name == "status") return WC_STATUS_BAR;
 	return WC_NONE;
 }
 
@@ -197,6 +204,15 @@ void Execute(const RecCommand &c)
 		}
 	} else if (c.cmd == "windows") {
 		for (const Window *w : Window::Iterate()) fprintf(stderr, "[rec] window class %d num %d at %d,%d size %d,%d\n", (int)w->window_class, (int)w->window_number, w->left, w->top, w->width, w->height);
+	} else if (c.cmd == "cab") {
+		const Vehicle *v = Vehicle::GetIfValid(VehicleID(std::stoi(c.args[0])));
+		if (v != nullptr) ShowCabViewWindow(v);
+	} else if (c.cmd == "3d") {
+		Window *w = GetWindow("cab");
+		if (w != nullptr) w->OnClick({}, WID_CV_3D, 1);
+	} else if (c.cmd == "zoomin") {
+		Window *w = GetWindow("main");
+		if (w != nullptr) DoZoomInOutWindow(ZOOM_IN, w);
 	} else if (c.cmd == "quit") {
 		_exit_game = true;
 	}

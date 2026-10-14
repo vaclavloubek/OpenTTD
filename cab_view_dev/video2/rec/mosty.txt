@@ -1,0 +1,14 @@
+0 close aidebug
+20 close aidebug
+40 close aidebug
+80 close aidebug
+0 move 1 xy 9000 9000
+0 follow 7
+1 zoomin
+240 cab 7
+240 close toolbar
+240 close status
+242 win cab 0 0 3840 2160
+420 3d
+3300 news First person view.\nAlpha coming soon.
+3720 quit
