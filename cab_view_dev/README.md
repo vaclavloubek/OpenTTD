@@ -325,11 +325,12 @@ Workflow `.github/workflows/cab-view-alpha.yml` postaví hru pro macOS (universa
 Windows (x64) a Linux (generic x64, glibc 2.28) s přibalenou OpenGFX 8.0, OpenSFX 1.0.3 a OpenMSX 0.4.2.
 Nic není podepsané vývojářským certifikátem (macOS jen ad hoc).
 
-- **Vydání:** pushnout tag ve tvaru `15.3-cabview-alphaN` na commit v `cab-view`. Tag je zároveň verze, kterou
-  hra ukazuje. Workflow pak vytvoří **koncept** releasu (draft, prerelease) se všemi balíčky, `SHA256SUMS.txt`
-  a popisem z `cab_view_dev/alpha/release_notes.md`. Koncept vidí jen majitel repozitáře; zveřejní ho ručně
-  tlačítkem „Publish release“ na GitHubu.
-- PR, které mění workflow nebo `cab_view_dev/alpha/`, balíčky jen postaví (verze `15.3-cabview-alpha-test`).
+- **Vydání:** změnit verzi v `cab_view_dev/alpha/VERSION` (ve tvaru `15.3-cabview-alphaN`) a PR sloučit do
+  `cab-view`. To je zároveň verze, kterou hra ukazuje. Workflow pak vytvoří **koncept** releasu (draft,
+  prerelease) se všemi balíčky, `SHA256SUMS.txt` a popisem z `cab_view_dev/alpha/release_notes.md`. Koncept
+  vidí jen majitel repozitáře; zveřejní ho ručně tlačítkem „Publish release“ na GitHubu a teprve tím vznikne
+  tag na sestaveném commitu. Tag se nepushuje ručně (Claude z vlákna smí pushovat jen do své větve).
+- PR, které mění workflow nebo `cab_view_dev/alpha/`, balíčky jen postaví (verze s `-test` na konci).
 - `release.yml` (oficiální vydávání OpenTTD) se na forku nespouští, jinak by ho zveřejnění releasu rozjelo.
 - Hra nemění nic ve stavu hry ani v uložených hrách, takže savy jsou kompatibilní s 15.3 oběma směry. Po síti
   se ale připojí jen ke stejné verzi (tagovaná verze musí sedět přesně).
