@@ -91,9 +91,11 @@ jobs:
         echo "::group::Install system dependencies"
         # perl-IPC-Cmd, wget, and zip are needed to run vcpkg.
         # autoconf-archive is needed to build ICU.
+        # perl-Time-Piece is needed to build OpenSSL (as upstream since 15.3).
         yum install -y \
           autoconf-archive \
           perl-IPC-Cmd \
+          perl-Time-Piece \
           wget \
           zip \
           # EOF
