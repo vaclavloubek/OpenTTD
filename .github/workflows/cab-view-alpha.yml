@@ -382,9 +382,6 @@ jobs:
     - macos
     - windows
 
-    # Only for a pushed tag; pull requests only check the build.
-    if: github.ref_type == 'tag'
-
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -400,19 +397,37 @@ jobs:
         path: bundles
         merge-multiple: true
 
+    # Plain names, so the release notes can link straight to them. This also
+    # runs for pull requests, to check the notes and names before a release.
+    - name: Prepare release files
+      run: |
+        cd bundles
+        ls -l
+        mv *-macos-*.zip "openttd-${VERSION}-macos.zip"
+        mv *-windows-*.zip "openttd-${VERSION}-windows-64bit.zip"
+        mv *-linux-*.tar.xz "openttd-${VERSION}-linux-64bit.tar.xz"
+        sha256sum * > ../SHA256SUMS.txt
+        mv ../SHA256SUMS.txt .
+        cat SHA256SUMS.txt
+
+        sed -e "s|{VERSION}|${VERSION}|g" -e "s|{REPO}|${GITHUB_REPOSITORY}|g" \
+          ../cab_view_dev/alpha/release_notes.md > ../release_notes.md
+        # Every file the notes link to must be there.
+        for FILE in $(grep -o "releases/download/${VERSION}/[^)]*" ../release_notes.md | sed 's|.*/||' | sort -u); do
+          test -f "${FILE}" || { echo "Release notes link to a missing file: ${FILE}"; exit 1; }
+        done
+
     - name: Create draft release
+      # Only for a pushed tag; pull requests only check the build.
+      if: github.ref_type == 'tag'
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        cd bundles
-        sha256sum * > SHA256SUMS.txt
-        cat SHA256SUMS.txt
-
         # A draft is not public; publishing it is done by hand on GitHub.
-        gh release create "${VERSION}" * \
+        gh release create "${VERSION}" bundles/* \
           --repo "${GITHUB_REPOSITORY}" \
           --draft \
           --prerelease \
           --verify-tag \
           --title "OpenTTD cab view ${VERSION#*-cabview-}: first person view (${VERSION})" \
-          --notes-file ../cab_view_dev/alpha/release_notes.md
+          --notes-file release_notes.md
